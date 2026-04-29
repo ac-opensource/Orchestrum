@@ -618,6 +618,83 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview adds projects to workflow config" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardProjectOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "Projects"
+    assert html =~ "aria-label=\"Add project\""
+
+    html =
+      view
+      |> element("button[aria-label=\"Add project\"]")
+      |> render_click()
+
+    assert html =~ "Linear project slug"
+
+    html =
+      view
+      |> form("#add-project-form", project: %{"name" => "Wallet Android", "project_slug" => ""})
+      |> render_submit()
+
+    assert html =~ "Linear project slug is required."
+    assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project"]
+
+    html =
+      view
+      |> form("#add-project-form",
+        project: %{
+          "name" => "Wallet Android",
+          "project_slug" => "wallet-android"
+        }
+      )
+      |> render_submit()
+
+    assert html =~ "Wallet Android"
+    assert html =~ "wallet-android"
+    assert html =~ "Wallet Android added"
+
+    assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project", "wallet-android"]
+    assert Enum.map(Config.project_configs(), & &1.name) == ["project", "Wallet Android"]
+
+    assert {:ok, %{config: config}} = Workflow.load(Workflow.workflow_file_path())
+
+    assert [
+             %{"tracker" => %{"project_slug" => "project"}},
+             %{
+               "id" => "wallet-android",
+               "name" => "Wallet Android",
+               "tracker" => %{"project_slug" => "wallet-android"}
+             }
+           ] = config["projects"]
+
+    html =
+      view
+      |> element("button[aria-label=\"Add project\"]")
+      |> render_click()
+
+    assert html =~ "Linear project slug"
+
+    html =
+      view
+      |> form("#add-project-form",
+        project: %{"name" => "Wallet Android", "project_slug" => "wallet-android"}
+      )
+      |> render_submit()
+
+    assert html =~ "Project is already configured."
+    assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project", "wallet-android"]
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),

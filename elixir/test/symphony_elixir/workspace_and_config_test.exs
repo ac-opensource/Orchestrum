@@ -5,6 +5,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.ProjectConfig
+  alias SymphonyElixir.ProjectRegistry
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -147,6 +148,122 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert ProjectConfig.for_issue(%{project_id: "local-project"}).workspace_root == "/tmp/local-workspaces"
     assert ProjectConfig.active_state_names(%{project_id: "local-project"}) == ["Todo", "Rework"]
     assert ProjectConfig.terminal_state_names(%{project_id: "local-project"}) == ["Human Review", "Done"]
+  end
+
+  test "project registry persists dashboard-added projects without dropping the default project" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "default-project",
+      workspace_root: "/tmp/default-workspaces"
+    )
+
+    assert {:ok, project} =
+             ProjectRegistry.add_project(%{
+               "name" => "App Project",
+               "project_slug" => "app-project"
+             })
+
+    assert project.name == "App Project"
+    assert project.tracker_project_slug == "app-project"
+
+    assert [default_project, added_project] = Config.project_configs()
+    assert default_project.tracker_project_slug == "default-project"
+    assert added_project.tracker_project_slug == "app-project"
+    assert added_project.workspace_root == "/tmp/default-workspaces"
+
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
+    assert String.trim(prompt) == "You are an agent for this repository."
+
+    assert [
+             %{"tracker" => %{"project_slug" => "default-project"}},
+             %{"name" => "App Project", "tracker" => %{"project_slug" => "app-project"}}
+           ] = config["projects"]
+
+    assert {:ok, second_project} =
+             ProjectRegistry.add_project(%{
+               "name" => "Ops Project",
+               "project_slug" => "ops-project"
+             })
+
+    assert second_project.name == "Ops Project"
+
+    assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == [
+             "default-project",
+             "app-project",
+             "ops-project"
+           ]
+
+    assert {:error, :duplicate_project} =
+             ProjectRegistry.add_project(%{
+               "name" => "Duplicate App",
+               "project_slug" => "app-project"
+             })
+  end
+
+  test "project registry rejects incomplete dashboard project input" do
+    assert {:error, :invalid_project_input} = ProjectRegistry.add_project(:invalid)
+
+    assert {:error, :project_name_required} =
+             ProjectRegistry.add_project(%{"name" => "", "project_slug" => "app-project"})
+
+    assert {:error, :project_name_required} =
+             ProjectRegistry.add_project(%{"name" => nil, "project_slug" => "app-project"})
+
+    assert {:error, :project_slug_required} =
+             ProjectRegistry.add_project(%{"name" => "App Project", "project_slug" => " "})
+
+    assert [%ProjectConfig{tracker_project_slug: "project"}] = Config.project_configs()
+  end
+
+  test "project registry treats null project lists as the default project" do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: memory
+      project_slug: "default-project"
+    workspace:
+      root: "/tmp/default-workspaces"
+    worker:
+      ssh_hosts: []
+    server:
+      enabled: false
+    projects: null
+    ---
+    Prompt
+    """)
+
+    assert :ok = WorkflowStore.force_reload()
+
+    assert {:ok, project} =
+             ProjectRegistry.add_project(%{
+               "name" => "App Project",
+               "project_slug" => "app-project"
+             })
+
+    assert project.tracker_project_slug == "app-project"
+    assert {:ok, %{config: config}} = Workflow.load()
+
+    assert [
+             %{"tracker" => %{"project_slug" => "default-project"}},
+             %{"name" => "App Project", "tracker" => %{"project_slug" => "app-project"}}
+           ] = config["projects"]
+
+    assert config["worker"]["ssh_hosts"] == []
+    assert config["server"]["enabled"] == false
+  end
+
+  test "project registry reports workflow write failures" do
+    workflow_path = Workflow.workflow_file_path()
+    File.chmod!(workflow_path, 0o400)
+
+    try do
+      assert {:error, {:workflow_write_failed, :eacces}} =
+               ProjectRegistry.add_project(%{
+                 "name" => "App Project",
+                 "project_slug" => "app-project"
+               })
+    after
+      File.chmod!(workflow_path, 0o600)
+    end
   end
 
   test "workspace clones a project-specific repository before hooks run" do

@@ -82,6 +82,17 @@ button.secondary:hover {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
 }
 
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
 .subtle-button {
   appearance: none;
   border: 1px solid var(--line-strong);
@@ -291,6 +302,64 @@ pre,
   margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.94rem;
+}
+
+.project-form {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card-muted);
+}
+
+.project-form-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.project-form label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.project-form input {
+  width: 100%;
+  min-height: 2.35rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.5rem 0.68rem;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.form-notice {
+  margin: 0.85rem 0 0;
+  color: var(--accent-ink);
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .table-wrap {

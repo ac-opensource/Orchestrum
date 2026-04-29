@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, ProjectRegistry}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -16,6 +16,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
       |> assign(:refresh_notice, nil)
+      |> assign(:show_project_form, false)
+      |> assign(:project_form, default_project_form())
+      |> assign(:project_form_error, nil)
+      |> assign(:project_form_notice, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -53,6 +57,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign(:payload, load_payload())
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
+  end
+
+  @impl true
+  def handle_event("show_project_form", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_project_form, true)
+     |> assign(:project_form_error, nil)
+     |> assign(:project_form_notice, nil)}
+  end
+
+  @impl true
+  def handle_event("cancel_project_form", _params, socket) do
+    {:noreply, reset_project_form(socket)}
+  end
+
+  @impl true
+  def handle_event("add_project", %{"project" => project_params}, socket) do
+    case ProjectRegistry.add_project(project_params) do
+      {:ok, project} ->
+        {:noreply,
+         socket
+         |> reset_project_form()
+         |> assign(:payload, load_payload())
+         |> assign(:now, DateTime.utc_now())
+         |> assign(:project_form_notice, "#{project.name} added")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:show_project_form, true)
+         |> assign(:project_form, project_form(project_params))
+         |> assign(:project_form_error, project_error(reason))
+         |> assign(:project_form_notice, nil)}
+    end
+  end
+
+  def handle_event("add_project", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_project_form, true)
+     |> assign(:project_form_error, project_error(:invalid_project_input))
+     |> assign(:project_form_notice, nil)}
   end
 
   @impl true
@@ -142,7 +189,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <h2 class="section-title">Projects</h2>
               <p class="section-copy">Configured project, workspace, and repository context.</p>
             </div>
+            <button type="button" class="icon-button" phx-click="show_project_form" aria-label="Add project" title="Add project">
+              [+]
+            </button>
           </div>
+
+          <%= if @project_form_notice do %>
+            <p class="form-notice"><%= @project_form_notice %></p>
+          <% end %>
+
+          <%= if @show_project_form do %>
+            <form id="add-project-form" class="project-form" phx-submit="add_project">
+              <div class="project-form-grid">
+                <label>
+                  <span>Project name</span>
+                  <input name="project[name]" value={@project_form["name"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Linear project slug</span>
+                  <input name="project[project_slug]" value={@project_form["project_slug"] || ""} autocomplete="off" />
+                </label>
+              </div>
+              <%= if @project_form_error do %>
+                <p class="form-error"><%= @project_form_error %></p>
+              <% end %>
+              <div class="form-actions">
+                <button type="submit">Add project</button>
+                <button type="button" class="secondary" phx-click="cancel_project_form">Cancel</button>
+              </div>
+            </form>
+          <% end %>
 
           <%= if @payload.projects == [] do %>
             <p class="empty-state">No configured projects.</p>
@@ -367,6 +443,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
+
+  defp default_project_form, do: %{"name" => "", "project_slug" => ""}
+
+  defp project_form(params) when is_map(params) do
+    %{
+      "name" => params["name"] || "",
+      "project_slug" => params["project_slug"] || params["tracker_project_slug"] || ""
+    }
+  end
+
+  defp reset_project_form(socket) do
+    socket
+    |> assign(:show_project_form, false)
+    |> assign(:project_form, default_project_form())
+    |> assign(:project_form_error, nil)
+  end
+
+  defp project_error(:project_name_required), do: "Project name is required."
+  defp project_error(:project_slug_required), do: "Linear project slug is required."
+  defp project_error(:duplicate_project), do: "Project is already configured."
+  defp project_error(:invalid_project_input), do: "Project name and Linear project slug are required."
+  defp project_error({:workflow_write_failed, _reason}), do: "Could not update WORKFLOW.md."
+  defp project_error({:workflow_reload_failed, _reason}), do: "Could not reload WORKFLOW.md."
+  defp project_error(_reason), do: "Could not add project."
 
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
     DateTime.diff(now, started_at, :second)
