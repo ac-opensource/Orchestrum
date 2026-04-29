@@ -1443,6 +1443,8 @@ Enablement (extension):
 - Host a human-readable dashboard at `/`.
 - The returned document SHOULD depict the current state of the system (for example active sessions,
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
+- If the dashboard exposes project management controls, adding a project MUST persist through the
+  same `WORKFLOW.md` `projects` configuration model used by orchestration and polling.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 

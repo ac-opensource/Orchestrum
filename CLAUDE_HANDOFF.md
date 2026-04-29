@@ -80,3 +80,18 @@ Result: passed. Coverage reported `230 tests, 0 failures, 2 skipped`; dialyzer r
 - The duplicate server dispatched AC-15 while the primary Codex turn was still active, wrote a retry entry, and interleaved log lines with the primary process.
 - Added an instance lock beside `orchestrator_state.json` so a second Orchestrum process fails startup instead of sharing state and double-dispatching issues.
 - Re-verification focus: if `:response_timeout` returns, first check for multiple `./bin/symphony ... ./WORKFLOW.md` processes and confirm only one process owns the state/log directory.
+
+## 2026-04-29 AC-15 Dashboard Project Add Handoff
+
+- Added a dashboard `[+]` control for Projects, a LiveView add-project form, and `SymphonyElixir.ProjectRegistry` persistence into `WORKFLOW.md`.
+- Dashboard-created projects keep the existing top-level project by seeding it into `projects`, persist the effective workspace root, reload workflow config, and reject missing or duplicate project input.
+- Updated the Elixir README and SPEC dashboard extension notes for dashboard project creation.
+- Validation passed:
+  - `cd elixir && mix test test/symphony_elixir/extensions_test.exs:621 test/symphony_elixir/workspace_and_config_test.exs:153 test/symphony_elixir/workspace_and_config_test.exs:202 test/symphony_elixir/workspace_and_config_test.exs:230 test/symphony_elixir/workspace_and_config_test.exs:250`
+  - `cd elixir && mix test test/symphony_elixir/workspace_and_config_test.exs`
+  - `cd elixir && mix specs.check`
+  - `cd elixir && mix format --check-formatted`
+  - `git diff --check`
+  - `make -C elixir all`
+- Runtime dashboard validation passed against `http://127.0.0.1:4055/`: adding `Runtime Evidence` persisted and displayed `runtime-evidence`.
+- Screenshot evidence: `.github/media/ac15-dashboard-add-project.png`.
