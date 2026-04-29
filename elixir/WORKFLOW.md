@@ -214,10 +214,14 @@ Use this whenever code changes are needed. The goal is to publish every complete
 `https://github.com/ac-opensource/Orchestrum`.
 
 1. Before implementation edits, create or switch to a feature branch from `origin/main`.
-   - Use `feature/<issue-identifier>-<short-topic>`.
+   - Use `feature/<source-ticket-id>-<short-topic>`.
+   - Prefer the external implementation ticket id from issue/comment context, such as a Notion
+     `MTDB-25692` id, for `<source-ticket-id>`; fall back to the Linear issue identifier only when
+     no external ticket id is provided.
    - Confirm `origin` points at `https://github.com/ac-opensource/Orchestrum` before pushing.
+   - Confirm GitHub operations use the `ac-bitcoin` account.
    - Set local git identity if needed:
-     `git config user.name ac-opensource && git config user.email aarconcepcion@gmail.com`.
+     `git config user.name ac-bitcoin && git config user.email 176258714+ac-bitcoin@users.noreply.github.com`.
 2. If branch creation or commit fails because `.git` cannot create refs, indexes, lock files, or
    metadata, do not mark the task blocked yet. Try, in order:
    - Retry after confirming the current workspace is the Orchestrum clone and not a copied tree.

@@ -30,8 +30,12 @@ description:
 1. Identify current branch and confirm remote state.
    - Confirm `origin` points to `https://github.com/ac-opensource/Orchestrum`
      for Orchestrum tasks.
+   - Use a `feature/*` branch. Prefer the external implementation ticket id
+     from issue/comment context, such as a Notion `MTDB-25692` id, before
+     falling back to the Linear issue identifier.
+   - Confirm GitHub operations use the `ac-bitcoin` account.
    - Ensure local git identity is
-     `ac-opensource <aarconcepcion@gmail.com>`.
+     `ac-bitcoin <176258714+ac-bitcoin@users.noreply.github.com>`.
 2. Run local validation (`make -C elixir all`) before pushing.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
@@ -74,8 +78,8 @@ description:
 ```sh
 # Identify branch
 branch=$(git branch --show-current)
-git config user.name ac-opensource
-git config user.email aarconcepcion@gmail.com
+git config user.name ac-bitcoin
+git config user.email 176258714+ac-bitcoin@users.noreply.github.com
 git remote get-url origin
 
 # Minimal validation gate
