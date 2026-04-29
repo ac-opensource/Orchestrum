@@ -216,8 +216,10 @@ Use this whenever code changes are needed. The goal is to publish every complete
 1. Before implementation edits, create or switch to a feature branch from `origin/main`.
    - Use `feature/<issue-identifier>-<short-topic>`.
    - Confirm `origin` points at `https://github.com/ac-opensource/Orchestrum` before pushing.
+   - Ensure the GitHub CLI active account is `ac-bitcoin`; if multiple accounts are authenticated,
+     run `gh auth switch --user ac-bitcoin`.
    - Set local git identity if needed:
-     `git config user.name ac-opensource && git config user.email aarconcepcion@gmail.com`.
+     `git config user.name ac-bitcoin && git config user.email andrew.concepcion@bitcoin.com`.
 2. If branch creation or commit fails because `.git` cannot create refs, indexes, lock files, or
    metadata, do not mark the task blocked yet. Try, in order:
    - Retry after confirming the current workspace is the Orchestrum clone and not a copied tree.

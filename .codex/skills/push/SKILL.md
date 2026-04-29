@@ -10,7 +10,8 @@ description:
 ## Prerequisites
 
 - `gh` CLI is installed and available in `PATH`.
-- `gh auth status` succeeds for GitHub operations in this repo.
+- `gh auth status` succeeds for GitHub operations in this repo with the
+  `ac-bitcoin` account available.
 
 ## Goals
 
@@ -30,8 +31,10 @@ description:
 1. Identify current branch and confirm remote state.
    - Confirm `origin` points to `https://github.com/ac-opensource/Orchestrum`
      for Orchestrum tasks.
+   - Ensure the GitHub CLI active account is `ac-bitcoin`; if multiple accounts
+     are authenticated, run `gh auth switch --user ac-bitcoin`.
    - Ensure local git identity is
-     `ac-opensource <aarconcepcion@gmail.com>`.
+     `ac-bitcoin <andrew.concepcion@bitcoin.com>`.
 2. Run local validation (`make -C elixir all`) before pushing.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
@@ -74,8 +77,9 @@ description:
 ```sh
 # Identify branch
 branch=$(git branch --show-current)
-git config user.name ac-opensource
-git config user.email aarconcepcion@gmail.com
+gh auth switch --user ac-bitcoin
+git config user.name ac-bitcoin
+git config user.email andrew.concepcion@bitcoin.com
 git remote get-url origin
 
 # Minimal validation gate
