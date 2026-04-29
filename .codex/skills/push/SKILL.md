@@ -17,6 +17,8 @@ description:
 - Push current branch changes to `origin` safely.
 - Create a PR if none exists for the branch, otherwise update the existing PR.
 - Keep branch history clean when remote has moved.
+- Do not get stuck on local `.git` ref/index/lock failures; use the workflow
+  publish fallback before reporting a blocker.
 
 ## Related Skills
 
@@ -26,6 +28,10 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
+   - Confirm `origin` points to `https://github.com/ac-opensource/Orchestrum`
+     for Orchestrum tasks.
+   - Ensure local git identity is
+     `ac-opensource <aarconcepcion@gmail.com>`.
 2. Run local validation (`make -C elixir all`) before pushing.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
@@ -33,6 +39,14 @@ description:
    - If the failure is a non-fast-forward or sync problem, run the `pull`
      skill to merge `origin/main`, resolve conflicts, and rerun validation.
    - Push again; use `--force-with-lease` only when history was rewritten.
+   - If the failure is a local `.git` ref, index, lock, or metadata creation
+     failure, follow `WORKFLOW.md`'s publish fallback protocol. If edits already
+     exist, export a binary patch, publish from a fresh `.codex-publish` clone,
+     re-run relevant validation there, then push from that clone.
+   - If GitHub DNS/network fails, retry after `git ls-remote origin` and
+     `gh auth status`. If it still fails, document the exact command/error in
+     the workpad and stop at the publish blocker; do not list PR review/checks
+     or land as blocked steps when no PR exists.
    - If the failure is due to auth, permissions, or workflow restrictions on
      the configured remote, stop and surface the exact error instead of
      rewriting remotes or switching protocols as a workaround.
@@ -60,6 +74,9 @@ description:
 ```sh
 # Identify branch
 branch=$(git branch --show-current)
+git config user.name ac-opensource
+git config user.email aarconcepcion@gmail.com
+git remote get-url origin
 
 # Minimal validation gate
 make -C elixir all
@@ -73,6 +90,9 @@ git push -u origin HEAD
 
 # If the configured remote rejects the push for auth, permissions, or workflow
 # restrictions, stop and surface the exact error.
+
+# If local .git metadata is not writable, follow the publish fallback protocol
+# in WORKFLOW.md. Do not mark PR review/checks/land blocked unless a PR exists.
 
 # Only if history was rewritten locally:
 git push --force-with-lease origin HEAD
@@ -115,3 +135,7 @@ gh pr view --json url -q .url
   - Use the `pull` skill for non-fast-forward or stale-branch issues.
   - Surface auth, permissions, or workflow restrictions directly instead of
     changing remotes or protocols.
+- Distinguish publish blockers from downstream PR blockers:
+  - No PR means there are no PR checks, review sweep, or land actions to run.
+  - Record one publish blocker with exact evidence instead of creating a
+    checklist of blocked future PR/land steps.

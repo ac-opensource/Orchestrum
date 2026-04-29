@@ -66,3 +66,10 @@ Result: passed. Coverage reported `230 tests, 0 failures, 2 skipped`; dialyzer r
 - Preserved the internal Elixir module/OTP app namespace (`SymphonyElixir` / `:symphony_elixir`) to keep the rename scoped and low-risk.
 - Validation: `mise exec -- make all` passed from `elixir/` with 242 tests, 0 failures, 2 skipped, 100% coverage, and Dialyzer `Total errors: 0`.
 - Re-verification focus: confirm future task workspaces have `origin` set to `https://github.com/ac-opensource/Orchestrum` before pushing.
+
+## 2026-04-29 Publish Blocker Workflow Follow-Up
+
+- Updated the Orchestrum workflow and push/land skills so unwritable `.git` metadata is handled with the required publish fallback instead of leaving agents stuck on branch, commit, PR, and land checklist items.
+- Set the Codex workflow sandbox to `danger-full-access` for trusted Orchestrum workspaces so branch, commit, and push operations can write git metadata.
+- Added stage-gating: agents must not list PR review, check sweep, or land work as blocked unless a PR exists, and land only runs for issues already in `Merging` with a real PR.
+- Re-verification focus: for future publish failures, confirm the workpad records one publish blocker with exact failing commands/errors, not separate blocked PR review/check/land tasks.

@@ -22,10 +22,14 @@ description:
 
 - `gh` CLI is authenticated.
 - You are on the PR branch with a clean working tree.
+- A PR exists for the current branch. If no PR exists, do not run land. Return
+  to the publish fallback protocol in `WORKFLOW.md` and move the issue back to
+  `In Progress` if needed.
 
 ## Steps
 
-1. Locate the PR for the current branch.
+1. Locate the PR for the current branch. If there is no PR number, stop land
+   immediately and treat the task as a publish problem, not a land problem.
 2. Confirm the full gauntlet is green locally before any push.
 3. If the working tree has uncommitted changes, commit with the `commit` skill
    and push with the `push` skill before proceeding.

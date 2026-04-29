@@ -36,9 +36,9 @@ agent:
 codex:
   command: codex --config "projects.\"$PWD\".trust_level=\"trusted\"" --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never
-  thread_sandbox: workspace-write
+  thread_sandbox: danger-full-access
   turn_sandbox_policy:
-    type: workspaceWrite
+    type: dangerFullAccess
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -103,6 +103,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Keep the workpad plan stage-gated. Do not add review, checks, or land tasks as blocking checklist
+  items until a PR exists. Do not add land tasks unless the issue is already in `Merging`.
 
 ## Related skills
 
@@ -198,12 +200,41 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
+- GitHub DNS, auth, or network failures become a blocker only after validated code exists and every publish fallback below has been attempted and documented in the workpad with exact commands and errors.
 - Do not move to `Human Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
 - If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `Human Review` with a short blocker brief in the workpad that includes:
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+
+## Publish fallback protocol (required)
+
+Use this whenever code changes are needed. The goal is to publish every completed task to
+`https://github.com/ac-opensource/Orchestrum`.
+
+1. Before implementation edits, create or switch to a feature branch from `origin/main`.
+   - Use `feature/<issue-identifier>-<short-topic>`.
+   - Confirm `origin` points at `https://github.com/ac-opensource/Orchestrum` before pushing.
+   - Set local git identity if needed:
+     `git config user.name ac-opensource && git config user.email aarconcepcion@gmail.com`.
+2. If branch creation or commit fails because `.git` cannot create refs, indexes, lock files, or
+   metadata, do not mark the task blocked yet. Try, in order:
+   - Retry after confirming the current workspace is the Orchestrum clone and not a copied tree.
+   - If no edits have been made, clone `origin` into `.codex-publish`, create the feature branch
+     there, and continue implementation from that fresh clone after recording the cwd switch in the
+     workpad.
+   - If edits already exist, export a patch and publish from a fresh clone inside the workspace:
+     `git diff --binary > .codex-publish.patch`, clone `origin` into `.codex-publish`, create the
+     feature branch there, apply the patch with `git apply --index ../.codex-publish.patch`,
+     re-run the relevant validation, commit, and push from `.codex-publish`.
+3. If `git push` or `gh pr create` fails because GitHub DNS/network/auth is unavailable, retry after
+   `git ls-remote origin` and `gh auth status`. If it still fails, update the workpad with:
+   - validated commit or patch location,
+   - exact failing command and error,
+   - the fact that no PR/check/review/land steps can run until GitHub access works.
+4. If no PR exists, do not add PR review, check sweep, or land checklist items as blocked work.
+   Record a single publish blocker instead.
 
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
@@ -227,6 +258,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
+    - If local `.git` metadata writes fail, follow the publish fallback protocol before declaring a blocker.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `orchestrum` (add it if missing).
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
@@ -244,7 +276,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
+    - Exception: if blocked by missing required tools/auth or by exhausted GitHub publish fallback per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
@@ -252,12 +284,15 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 3: Human Review and merge handling
 
-1. When the issue is in `Human Review`, do not code or change ticket content.
+1. When the issue is in `Human Review`, do not code or change ticket content unless the workpad says the only blocker is GitHub publish access and that access has become available.
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+5. When the issue is in `Merging`, first confirm a PR exists. If no PR exists, move it back to
+   `In Progress` and run the publish fallback protocol instead of running `land`.
+6. When the issue is in `Merging` and a PR exists, open and follow `.codex/skills/land/SKILL.md`,
+   then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
+7. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
@@ -280,6 +315,13 @@ Use this only when completion is blocked by missing required tools or missing au
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`orchestrum` label).
 - If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+
+Publish-blocked exception:
+
+- If code and required validation are complete but branch/PR publication is blocked after the
+  publish fallback protocol, the issue may move to `Human Review` with a concise blocker brief.
+- In that exception, do not list PR review, checks, or land as blocked checklist items; they are
+  not actionable until a PR exists.
 
 ## Guardrails
 
