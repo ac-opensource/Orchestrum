@@ -2,6 +2,8 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+config :symphony_elixir, :instance_lock_enabled, config_env() != :test
+
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

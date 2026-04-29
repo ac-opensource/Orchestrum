@@ -7,7 +7,7 @@ defmodule SymphonyElixir.InstanceLockTest do
     path = temp_lock_path()
     name = unique_name()
 
-    assert {:ok, pid} = InstanceLock.start_link(path: path, name: name)
+    assert {:ok, pid} = InstanceLock.start_link(path: path, name: name, enabled: true)
     assert File.read!(path) =~ "pid=#{System.pid()}"
 
     GenServer.stop(pid)
@@ -20,7 +20,7 @@ defmodule SymphonyElixir.InstanceLockTest do
     File.write!(path, "pid=123\n")
 
     assert {:error, {:orchestrum_instance_already_running, locked_path, 123}} =
-             InstanceLock.start_link(path: path, name: unique_name(), pid_checker: fn 123 -> true end)
+             InstanceLock.start_link(path: path, name: unique_name(), enabled: true, pid_checker: fn 123 -> true end)
 
     assert locked_path == Path.expand(path)
   end
@@ -31,10 +31,19 @@ defmodule SymphonyElixir.InstanceLockTest do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, "pid=123\n")
 
-    assert {:ok, pid} = InstanceLock.start_link(path: path, name: name, pid_checker: fn 123 -> false end)
+    assert {:ok, pid} =
+             InstanceLock.start_link(path: path, name: name, enabled: true, pid_checker: fn 123 -> false end)
+
     assert File.read!(path) =~ "pid=#{System.pid()}"
 
     GenServer.stop(pid)
+  end
+
+  test "ignores startup when disabled" do
+    path = temp_lock_path()
+
+    assert :ignore = InstanceLock.start_link(path: path, name: unique_name(), enabled: false)
+    refute File.exists?(path)
   end
 
   defp temp_lock_path do

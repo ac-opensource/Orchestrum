@@ -9,17 +9,22 @@ defmodule SymphonyElixir.InstanceLock do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
+    enabled? = Keyword.get(opts, :enabled, Application.get_env(:symphony_elixir, :instance_lock_enabled, true))
     path = Keyword.get(opts, :path, default_lock_path())
     name = Keyword.get(opts, :name, __MODULE__)
     pid_checker = Keyword.get(opts, :pid_checker, &pid_alive?/1)
     owner_pid = Keyword.get(opts, :owner_pid, System.pid())
 
-    case acquire(path, owner_pid, pid_checker) do
-      {:ok, lock} ->
-        GenServer.start_link(__MODULE__, lock, name: name)
+    if enabled? do
+      case acquire(path, owner_pid, pid_checker) do
+        {:ok, lock} ->
+          GenServer.start_link(__MODULE__, lock, name: name)
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :ignore
     end
   end
 
