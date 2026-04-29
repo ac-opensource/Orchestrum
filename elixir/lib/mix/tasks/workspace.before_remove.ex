@@ -12,10 +12,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
 
       mix workspace.before_remove
       mix workspace.before_remove --branch feature/my-branch
-      mix workspace.before_remove --repo openai/symphony
+      mix workspace.before_remove --repo ac-opensource/Orchestrum
   """
 
-  @default_repo "openai/symphony"
+  @default_repo "ac-opensource/Orchestrum"
 
   @impl Mix.Task
   def run(args) do

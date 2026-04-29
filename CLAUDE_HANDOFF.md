@@ -57,3 +57,12 @@ Result: passed. Coverage reported `230 tests, 0 failures, 2 skipped`; dialyzer r
 - Health check: `curl http://localhost:4000/api/v1/state` returned successfully with `running: 1` and active issue `AC-14`.
 - In-app browser reload verified `http://localhost:4000/` with title `Symphony Observability` and dashboard content present.
 - Recent log scan showed only expected startup lines for `SymphonyElixirWeb.Endpoint` on port 4000; no recent `:response_timeout`, `Issue.links`, or Linear GraphQL failure lines were present.
+
+## 2026-04-29 Orchestrum Rename and Publish Handoff
+
+- Renamed product-facing docs, CLI output, dashboard labels, default workspace/log paths, and the escript from Symphony to Orchestrum.
+- Configured `elixir/WORKFLOW.md` so future orchestrator task workspaces clone `https://github.com/ac-opensource/Orchestrum` and agents push task branches/PRs to that clone's `origin`.
+- Updated workspace cleanup to close PRs in `ac-opensource/Orchestrum`.
+- Preserved the internal Elixir module/OTP app namespace (`SymphonyElixir` / `:symphony_elixir`) to keep the rename scoped and low-risk.
+- Validation: `mise exec -- make all` passed from `elixir/` with 242 tests, 0 failures, 2 skipped, 100% coverage, and Dialyzer `Total errors: 0`.
+- Re-verification focus: confirm future task workspaces have `origin` set to `https://github.com/ac-opensource/Orchestrum` before pushing.

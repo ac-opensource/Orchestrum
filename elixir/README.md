@@ -1,15 +1,15 @@
-# Symphony Elixir
+# Orchestrum Elixir
 
-This directory contains the current Elixir/OTP implementation of Symphony, based on
+This directory contains the current Elixir/OTP implementation of Orchestrum, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 
 > [!WARNING]
-> Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
+> Orchestrum Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
 ## Screenshot
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+![Orchestrum Elixir screenshot](../.github/media/elixir-screenshot.png)
 
 ## How it works
 
@@ -20,12 +20,12 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony serves client-side tracker tools. `linear_graphql` is available
+During app-server sessions, Orchestrum serves client-side tracker tools. `linear_graphql` is available
 for raw Linear reads and verification, while `tracker_create_comment` and
 `tracker_update_issue_state` route comments and state changes through the configured tracker adapter.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+Orchestrum stops the active agent for that issue and cleans up matching workspaces.
 
 ## How to use it
 
@@ -35,7 +35,7 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
+   - The `linear` skill expects Orchestrum's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
@@ -57,28 +57,28 @@ mise exec -- elixir --version
 ## Run
 
 ```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
+git clone https://github.com/ac-opensource/Orchestrum
+cd Orchestrum/elixir
 mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/orchestrum ./WORKFLOW.md
 ```
 
 ## Configuration
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+Pass a custom workflow file path to `./bin/orchestrum` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/orchestrum /path/to/custom/WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+If no path is passed, Orchestrum defaults to `./WORKFLOW.md`.
 
 Optional flags:
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
+- `--logs-root` tells Orchestrum to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
@@ -117,21 +117,21 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
+- When `codex.turn_sandbox_policy` is set explicitly, Orchestrum passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+  Orchestrum validation.
+- `agent.max_turns` caps how many back-to-back Codex turns Orchestrum will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
+- If the Markdown body is blank, Orchestrum uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - For multiple projects, define a top-level `projects` list. Each project inherits top-level
   `tracker` and `workspace` defaults and may override `tracker.project_slug`, state lists,
   `workspace.root`, and `repository.path`.
-- `repository.path` on a project makes Symphony clone that repository into a newly created workspace
+- `repository.path` on a project makes Orchestrum clone that repository into a newly created workspace
   before running `hooks.after_create`.
-- `orchestrator.state_path` stores retry/session metadata as local JSON. When omitted, Symphony
+- `orchestrator.state_path` stores retry/session metadata as local JSON. When omitted, Orchestrum
   writes `orchestrator_state.json` next to the configured log file.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
@@ -145,7 +145,7 @@ Notes:
 tracker:
   api_key: $LINEAR_API_KEY
 workspace:
-  root: $SYMPHONY_WORKSPACE_ROOT
+  root: $ORCHESTRUM_WORKSPACE_ROOT
 hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
@@ -153,8 +153,8 @@ codex:
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
 
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
-- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
+- If `WORKFLOW.md` is missing or has invalid YAML at startup, Orchestrum does not boot.
+- If a later reload fails, Orchestrum keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.enabled: true` starts the optional Phoenix LiveView dashboard and JSON API using
   `server.port` or port `4000` when no port is set. CLI `--port` overrides workflow server config.
@@ -185,7 +185,7 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
+Run the real external end-to-end test only when you want Orchestrum to create disposable Linear
 resources and launch a real `codex app-server` session:
 
 ```bash
@@ -196,20 +196,20 @@ make e2e
 
 Optional environment variables:
 
-- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+- `ORCHESTRUM_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
+- `ORCHESTRUM_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
 
 `make e2e` runs two live scenarios:
 - one with a local worker
 - one with SSH workers
 
-If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
+If `ORCHESTRUM_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
 disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
-mounts the host `~/.codex/auth.json` into each worker, verifies that Symphony can talk to them
+mounts the host `~/.codex/auth.json` into each worker, verifies that Orchestrum can talk to them
 over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
 the transport representative without depending on long-lived external machines.
 
-Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
+Set `ORCHESTRUM_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
 
 The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
@@ -225,7 +225,7 @@ actively running subagents, which is very useful during development.
 
 ### What's the easiest way to set this up for my own codebase?
 
-Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
+Launch `codex` in your repo, give it the URL to the Orchestrum repo, and ask it to set things up for
 you.
 
 ## License

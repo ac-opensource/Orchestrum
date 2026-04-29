@@ -91,8 +91,8 @@ defmodule SymphonyElixir.MixProject do
     [
       app: nil,
       main_module: SymphonyElixir.CLI,
-      name: "symphony",
-      path: "bin/symphony"
+      name: "orchestrum",
+      path: "bin/orchestrum"
     ]
   end
 end

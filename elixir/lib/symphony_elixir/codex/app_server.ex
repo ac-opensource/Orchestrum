@@ -248,8 +248,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           "experimentalApi" => true
         },
         "clientInfo" => %{
-          "name" => "symphony-orchestrator",
-          "title" => "Symphony Orchestrator",
+          "name" => "orchestrum-orchestrator",
+          "title" => "Orchestrum Orchestrator",
           "version" => "0.1.0"
         }
       }

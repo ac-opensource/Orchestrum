@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Orchestrator.Persistence
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -300,21 +302,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state_path = Path.join(test_root, "state.json")
 
     try do
-      assert :ok = SymphonyElixir.Orchestrator.Persistence.save(state_path, %{"ok" => true})
-      assert {:ok, %{"ok" => true}} = SymphonyElixir.Orchestrator.Persistence.load(state_path)
-      assert {:error, :enoent} = SymphonyElixir.Orchestrator.Persistence.load(Path.join(test_root, "missing.json"))
+      assert :ok = Persistence.save(state_path, %{"ok" => true})
+      assert {:ok, %{"ok" => true}} = Persistence.load(state_path)
+      assert {:error, :enoent} = Persistence.load(Path.join(test_root, "missing.json"))
 
       File.mkdir_p!(Path.join(test_root, "directory"))
-      assert {:error, _reason} = SymphonyElixir.Orchestrator.Persistence.load(Path.join(test_root, "directory"))
+      assert {:error, _reason} = Persistence.load(Path.join(test_root, "directory"))
 
       assert {:error, _reason} =
-               SymphonyElixir.Orchestrator.Persistence.save(Path.join(test_root, "bad.json"), %{"pid" => self()})
+               Persistence.save(Path.join(test_root, "bad.json"), %{"pid" => self()})
 
       file_parent = Path.join(test_root, "file-parent")
       File.write!(file_parent, "not a directory")
 
       assert {:error, _reason} =
-               SymphonyElixir.Orchestrator.Persistence.save(Path.join(file_parent, "state.json"), %{"ok" => true})
+               Persistence.save(Path.join(file_parent, "state.json"), %{"ok" => true})
     after
       File.rm_rf(test_root)
     end

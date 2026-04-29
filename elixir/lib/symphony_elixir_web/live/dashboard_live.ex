@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.DashboardLive do
   @moduledoc """
-  Live observability dashboard for Symphony.
+  Live observability dashboard for Orchestrum.
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
@@ -63,13 +63,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">
-              Symphony Observability
+              Orchestrum Observability
             </p>
             <h1 class="hero-title">
               Operations Dashboard
             </h1>
             <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
+              Current state, retry pressure, token usage, and orchestration health for the active Orchestrum runtime.
             </p>
           </div>
 

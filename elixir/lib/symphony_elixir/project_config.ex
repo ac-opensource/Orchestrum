@@ -76,7 +76,7 @@ defmodule SymphonyElixir.ProjectConfig do
 
     Enum.find(projects, fn project ->
       project_keys(project)
-      |> Enum.any?(&MapSet.member?(issue_keys, &1))
+      |> Enum.any?(&(&1 in issue_keys))
     end) || List.first(projects) || default_project(settings)
   end
 
@@ -156,12 +156,13 @@ defmodule SymphonyElixir.ProjectConfig do
 
   defp normalize_id(_value), do: nil
 
+  @spec project_keys(t()) :: [String.t()]
   defp project_keys(%__MODULE__{} = project) do
     [project.id, project.name, project.tracker_project_slug]
-    |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
+    |> Enum.filter(&is_binary/1)
   end
 
+  @spec issue_project_keys(term()) :: [String.t()]
   defp issue_project_keys(%{project: project}) when is_map(project) do
     [
       project[:id],
@@ -174,13 +175,12 @@ defmodule SymphonyElixir.ProjectConfig do
       project["slugId"],
       project["slug_id"]
     ]
-    |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp issue_project_keys(%{project_id: project_id}) when is_binary(project_id) do
-    MapSet.new([project_id])
+    [project_id]
   end
 
-  defp issue_project_keys(_issue), do: MapSet.new()
+  defp issue_project_keys(_issue), do: []
 end

@@ -420,12 +420,12 @@ defmodule SymphonyElixir.LiveE2ETest do
   end
 
   defp run_live_issue_flow!(backend) when backend in [:local, :ssh] do
-    run_id = "symphony-live-e2e-#{backend}-#{System.unique_integer([:positive])}"
+    run_id = "orchestrum-live-e2e-#{backend}-#{System.unique_integer([:positive])}"
     test_root = Path.join(System.tmp_dir!(), run_id)
     workflow_root = Path.join(test_root, "workflow")
     workflow_file = Path.join(workflow_root, "WORKFLOW.md")
     worker_setup = live_worker_setup!(backend, run_id, test_root)
-    team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
+    team_key = System.get_env("ORCHESTRUM_LIVE_LINEAR_TEAM_KEY") || @default_team_key
     original_workflow_path = Workflow.workflow_file_path()
     orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
 
@@ -608,7 +608,7 @@ defmodule SymphonyElixir.LiveE2ETest do
   end
 
   defp live_ssh_worker_hosts do
-    System.get_env("SYMPHONY_LIVE_SSH_WORKER_HOSTS", "")
+    System.get_env("ORCHESTRUM_LIVE_SSH_WORKER_HOSTS", "")
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
@@ -722,10 +722,10 @@ defmodule SymphonyElixir.LiveE2ETest do
   defp docker_compose_env(worker_ports, auth_json_path, authorized_key_path)
        when is_list(worker_ports) and is_binary(auth_json_path) and is_binary(authorized_key_path) do
     [
-      {"SYMPHONY_LIVE_DOCKER_AUTH_JSON", auth_json_path},
-      {"SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY", authorized_key_path},
-      {"SYMPHONY_LIVE_DOCKER_WORKER_1_PORT", Integer.to_string(Enum.at(worker_ports, 0))},
-      {"SYMPHONY_LIVE_DOCKER_WORKER_2_PORT", Integer.to_string(Enum.at(worker_ports, 1))}
+      {"ORCHESTRUM_LIVE_DOCKER_AUTH_JSON", auth_json_path},
+      {"ORCHESTRUM_LIVE_DOCKER_AUTHORIZED_KEY", authorized_key_path},
+      {"ORCHESTRUM_LIVE_DOCKER_WORKER_1_PORT", Integer.to_string(Enum.at(worker_ports, 0))},
+      {"ORCHESTRUM_LIVE_DOCKER_WORKER_2_PORT", Integer.to_string(Enum.at(worker_ports, 1))}
     ]
   end
 

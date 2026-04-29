@@ -107,7 +107,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      field(:root, :string, default: Path.join(System.tmp_dir!(), "orchestrum_workspaces"))
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -465,7 +465,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     workspace = %{
       settings.workspace
-      | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "orchestrum_workspaces"))
     }
 
     projects = Enum.map(settings.projects, &resolve_project_settings(&1, tracker, workspace))
@@ -519,13 +519,10 @@ defmodule SymphonyElixir.Config.Schema do
     %{project | tracker: tracker, workspace: workspace, repository: repository}
   end
 
-  defp inherit_list(value, _fallback) when is_list(value) and value != [], do: value
-  defp inherit_list(_value, fallback), do: fallback
-
   defp inherit_tracker_list(value, fallback, schema_default) when value == schema_default and fallback != schema_default,
     do: fallback
 
-  defp inherit_tracker_list(value, fallback, _schema_default), do: inherit_list(value, fallback)
+  defp inherit_tracker_list(value, _fallback, _schema_default), do: value
 
   defp resolve_optional_path(nil), do: nil
 
@@ -536,8 +533,6 @@ defmodule SymphonyElixir.Config.Schema do
       path -> path
     end
   end
-
-  defp resolve_optional_path(_value), do: nil
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -671,7 +666,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp expand_local_workspace_root(_workspace_root) do
-    Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+    Path.expand(Path.join(System.tmp_dir!(), "orchestrum_workspaces"))
   end
 
   defp format_errors(changeset) do

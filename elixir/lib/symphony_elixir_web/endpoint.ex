@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.Endpoint do
   @moduledoc """
-  Phoenix endpoint for Symphony's optional observability UI and API.
+  Phoenix endpoint for Orchestrum's optional observability UI and API.
   """
 
   use Phoenix.Endpoint, otp_app: :symphony_elixir

@@ -87,6 +87,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.snapshot_timeout_ms() == 1234
   end
 
+  test "schema rejects empty tracker state lists" do
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{tracker: %{active_states: []}})
+
+    assert message == "tracker.active_states must include at least one state name"
+  end
+
+  test "schema resolves blank and missing repository paths" do
+    missing_repository_env = "ORCHESTRUM_MISSING_REPOSITORY_PATH_#{System.unique_integer([:positive])}"
+    previous_repository_env = System.get_env(missing_repository_env)
+
+    on_exit(fn ->
+      restore_env(missing_repository_env, previous_repository_env)
+    end)
+
+    System.delete_env(missing_repository_env)
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               projects: [
+                 %{id: "blank", repository: %{path: ""}},
+                 %{id: "missing", repository: %{path: "$#{missing_repository_env}"}}
+               ]
+             })
+
+    assert Enum.map(settings.projects, & &1.repository.path) == [nil, nil]
+  end
+
   test "project config convenience helpers select configured projects" do
     File.write!(Workflow.workflow_file_path(), """
     ---
@@ -891,7 +919,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
-    assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert config.workspace.root == Path.join(System.tmp_dir!(), "orchestrum_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
@@ -907,7 +935,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.thread_sandbox == "workspace-write"
 
     assert {:ok, canonical_default_workspace_root} =
-             SymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+             SymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "orchestrum_workspaces"))
 
     assert Config.codex_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
@@ -1188,7 +1216,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              })
 
     assert settings.tracker.api_key == nil
-    assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert settings.workspace.root == Path.join(System.tmp_dir!(), "orchestrum_workspaces")
 
     assert settings.codex.approval_policy == %{
              "reject" => %{"sandbox_approval" => true}
@@ -1201,7 +1229,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              })
 
     assert settings.tracker.api_key == "fallback-linear-token"
-    assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert settings.workspace.root == Path.join(System.tmp_dir!(), "orchestrum_workspaces")
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do
@@ -1217,7 +1245,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              workspace: %Schema.Workspace{root: ""}
            }) == %{
              "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
+             "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "orchestrum_workspaces"))],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -1243,15 +1271,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "schema keeps workspace roots raw while sandbox helpers expand only for local use" do
     assert {:ok, settings} =
              Schema.parse(%{
-               workspace: %{root: "~/.symphony-workspaces"},
+               workspace: %{root: "~/.orchestrum-workspaces"},
                codex: %{}
              })
 
-    assert settings.workspace.root == "~/.symphony-workspaces"
+    assert settings.workspace.root == "~/.orchestrum-workspaces"
 
     assert Schema.resolve_turn_sandbox_policy(settings) == %{
              "type" => "workspaceWrite",
-             "writableRoots" => [Path.expand("~/.symphony-workspaces")],
+             "writableRoots" => [Path.expand("~/.orchestrum-workspaces")],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,
@@ -1263,7 +1291,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert remote_policy == %{
              "type" => "workspaceWrite",
-             "writableRoots" => ["~/.symphony-workspaces"],
+             "writableRoots" => ["~/.orchestrum-workspaces"],
              "readOnlyAccess" => %{"type" => "fullAccess"},
              "networkAccess" => false,
              "excludeTmpdirEnvVar" => false,

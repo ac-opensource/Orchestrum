@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.Router do
   @moduledoc """
-  Router for Symphony's observability dashboard and API.
+  Router for Orchestrum's observability dashboard and API.
   """
 
   use Phoenix.Router

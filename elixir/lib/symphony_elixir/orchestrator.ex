@@ -714,7 +714,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminal_state_set(_issue, fallback), do: fallback
 
   defp active_state_set(%Issue{} = issue), do: state_name_set(Config.project_config_for_issue(issue).active_states)
-  defp active_state_set(_issue), do: active_state_set()
 
   defp active_state_set(%Issue{} = issue, _fallback), do: active_state_set(issue)
   defp active_state_set(_issue, fallback), do: fallback
@@ -1472,8 +1471,6 @@ defmodule SymphonyElixir.Orchestrator do
     restore_running_entries(state, payload["running"], payload["running_sessions"])
   end
 
-  defp restore_running_entries(state, _payload), do: state
-
   defp restore_running_entries(%State{} = state, running, running_sessions) do
     restored_running =
       %{}
@@ -1483,7 +1480,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       state
       | running: restored_running,
-        claimed: MapSet.union(state.claimed, MapSet.new(Map.keys(restored_running)))
+        claimed: MapSet.new(Map.keys(restored_running) ++ Map.keys(state.retry_attempts))
     }
   end
 
@@ -1515,8 +1512,6 @@ defmodule SymphonyElixir.Orchestrator do
     restore_retry_entries(state, payload["retry_attempts"], payload["retry_attempt_list"])
   end
 
-  defp restore_retry_entries(state, _payload), do: state
-
   defp restore_retry_entries(%State{} = state, retry_attempts, retry_attempt_list) do
     now_wall_ms = System.system_time(:millisecond)
     now_ms = System.monotonic_time(:millisecond)
@@ -1527,7 +1522,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> restore_retry_list(retry_attempts, now_wall_ms, now_ms)
       |> restore_retry_list(retry_attempt_list, now_wall_ms, now_ms)
 
-    %{state | retry_attempts: restored_retries, claimed: MapSet.union(state.claimed, MapSet.new(Map.keys(restored_retries)))}
+    %{state | retry_attempts: restored_retries, claimed: MapSet.new(Map.keys(state.running) ++ Map.keys(restored_retries))}
   end
 
   defp restore_retry_map(acc, retry_attempts, now_wall_ms, now_ms) when is_map(retry_attempts) do
