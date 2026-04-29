@@ -35,3 +35,20 @@
 - Restarted the dashboard at `http://localhost:4000/` in detached `screen` session `symphonium`; `/api/v1/state` responded.
 - In-app browser verification loaded `http://localhost:4000/` with title `Symphony Observability`.
 - Fresh 35-second log scan after restart showed no `:response_timeout`, `port_exit`, or `Issue.links` GraphQL errors.
+
+## 2026-04-29 - AC-15 duplicate runtime timeout
+
+### Symptoms
+
+- Dashboard reported `agent exited` for AC-15 with `:response_timeout`.
+- `orchestrator_state.json` showed AC-15 queued for retry even though Codex output for the same issue was still streaming.
+
+### Findings
+
+- Two local Orchestrum instances were running the same workflow/log/state directory: the intended screen server on port 4000 and a duplicate foreground server on port 4001.
+- The duplicate process dispatched AC-15 while the primary Codex turn was still active, then wrote the retry entry that made the dashboard look stuck.
+
+### Fixes
+
+- Stopped the duplicate port 4001 process and the orphaned duplicate Codex app-server group.
+- Added an instance lock beside `orchestrator_state.json` so future duplicate starts fail before polling or dispatching.

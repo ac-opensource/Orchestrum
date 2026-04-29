@@ -73,3 +73,10 @@ Result: passed. Coverage reported `230 tests, 0 failures, 2 skipped`; dialyzer r
 - Set the Codex workflow sandbox to `danger-full-access` for trusted Orchestrum workspaces so branch, commit, and push operations can write git metadata.
 - Added stage-gating: agents must not list PR review, check sweep, or land work as blocked unless a PR exists, and land only runs for issues already in `Merging` with a real PR.
 - Re-verification focus: for future publish failures, confirm the workpad records one publish blocker with exact failing commands/errors, not separate blocked PR review/check/land tasks.
+
+## 2026-04-29 Duplicate Runtime Lock Follow-Up
+
+- AC-15 hit `:response_timeout` because two local Orchestrum instances were running the same workflow/log/state directory: the intended screen server on port 4000 and a duplicate foreground server on port 4001.
+- The duplicate server dispatched AC-15 while the primary Codex turn was still active, wrote a retry entry, and interleaved log lines with the primary process.
+- Added an instance lock beside `orchestrator_state.json` so a second Orchestrum process fails startup instead of sharing state and double-dispatching issues.
+- Re-verification focus: if `:response_timeout` returns, first check for multiple `./bin/symphony ... ./WORKFLOW.md` processes and confirm only one process owns the state/log directory.
