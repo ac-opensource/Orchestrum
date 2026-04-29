@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.ProjectConfig
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -35,6 +36,144 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.exists?(Path.join(workspace, ".git"))
       assert File.read!(Path.join(workspace, "README.md")) == "hook clone\n"
       assert File.read!(Path.join([workspace, "keep", "file.txt"])) == "keep me"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workflow projects inherit defaults and expose project-specific repository context" do
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-project-default-#{System.unique_integer([:positive])}")
+    project_root = Path.join(System.tmp_dir!(), "symphony-project-local-#{System.unique_integer([:positive])}")
+    repo_path = Path.join(System.tmp_dir!(), "symphony-project-repo-#{System.unique_integer([:positive])}")
+
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: linear
+      api_key: "token"
+      project_slug: "default-project"
+      active_states: ["Todo", "In Progress", "Merging", "Rework"]
+      terminal_states: ["Done", "Canceled", "Duplicate"]
+    workspace:
+      root: "#{workspace_root}"
+    projects:
+      - id: "local"
+        name: "Local Project"
+        tracker:
+          project_slug: "local-project"
+        workspace:
+          root: "#{project_root}"
+        repository:
+          path: "#{repo_path}"
+    server:
+      enabled: true
+    observability:
+      snapshot_timeout_ms: 1234
+    ---
+    Prompt
+    """)
+
+    assert :ok = WorkflowStore.force_reload()
+    assert [project] = Config.project_configs()
+    assert project.id == "local"
+    assert project.name == "Local Project"
+    assert project.tracker_kind == "linear"
+    assert project.tracker_project_slug == "local-project"
+    assert project.active_states == ["Todo", "In Progress", "Merging", "Rework"]
+    assert project.terminal_states == ["Done", "Canceled", "Duplicate"]
+    assert project.workspace_root == project_root
+    assert project.repository_path == repo_path
+    assert Config.server_port() == 4000
+    assert Config.snapshot_timeout_ms() == 1234
+  end
+
+  test "project config convenience helpers select configured projects" do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: memory
+      project_slug: "default-project"
+      active_states: ["Todo", "In Progress"]
+      terminal_states: ["Done"]
+    workspace:
+      root: "/tmp/default-workspaces"
+    projects:
+      - id: ""
+        name: ""
+        tracker:
+          project_slug: "local-project"
+          active_states: ["Todo", "Rework"]
+          terminal_states: ["Human Review", "Done"]
+        workspace:
+          root: "/tmp/local-workspaces"
+    ---
+    Prompt
+    """)
+
+    assert :ok = WorkflowStore.force_reload()
+
+    assert [project] = ProjectConfig.all()
+    assert project.id == "local-project"
+    assert project.name == "local-project"
+    assert ProjectConfig.default().id == "default-project"
+    assert ProjectConfig.for_issue(%{project_id: "local-project"}).workspace_root == "/tmp/local-workspaces"
+    assert ProjectConfig.active_state_names(%{project_id: "local-project"}) == ["Todo", "Rework"]
+    assert ProjectConfig.terminal_state_names(%{project_id: "local-project"}) == ["Human Review", "Done"]
+  end
+
+  test "workspace clones a project-specific repository before hooks run" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-project-workspace-#{System.unique_integer([:positive])}")
+    template_repo = Path.join(test_root, "source")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "project repo\n")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(Workflow.workflow_file_path(), """
+      ---
+      tracker:
+        kind: linear
+        api_key: "token"
+        project_slug: "default-project"
+      workspace:
+        root: "#{Path.join(test_root, "default-workspaces")}"
+      projects:
+        - id: "local"
+          tracker:
+            project_slug: "local-project"
+          workspace:
+            root: "#{workspace_root}"
+          repository:
+            path: "#{template_repo}"
+      hooks:
+        after_create: |
+          test -d .git
+          echo hook-ran > hook.txt
+      ---
+      Prompt
+      """)
+
+      assert :ok = WorkflowStore.force_reload()
+
+      issue = %Issue{
+        id: "issue-local",
+        identifier: "LOCAL-1",
+        title: "Local project issue",
+        state: "In Progress",
+        project: %{slug: "local-project"}
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert {:ok, expected_workspace} = SymphonyElixir.PathSafety.canonicalize(Path.join(workspace_root, "LOCAL-1"))
+      assert workspace == expected_workspace
+      assert File.read!(Path.join(workspace, "README.md")) == "project repo\n"
+      assert File.read!(Path.join(workspace, "hook.txt")) == "hook-ran\n"
     after
       File.rm_rf(test_root)
     end
@@ -458,6 +597,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
+  test "linear client maps request exceptions into error tuples" do
+    assert {:error, {:linear_api_request, {:request_exception, %RuntimeError{message: "boom"}}}} =
+             Client.graphql(
+               "query Viewer { viewer { id } }",
+               %{},
+               request_fun: fn _payload, _headers ->
+                 raise "boom"
+               end
+             )
+  end
+
   test "orchestrator sorts dispatch by priority then oldest created_at" do
     issue_same_priority_older = %Issue{
       id: "issue-old-high",
@@ -850,6 +1000,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_host: "   ")
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "server.host"
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
     assert :ok = Config.validate!()

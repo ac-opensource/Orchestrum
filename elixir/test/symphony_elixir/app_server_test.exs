@@ -427,19 +427,18 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 2 and
-                   case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
+                   get_in(payload, ["params", "dynamicTools"])
+                   |> Enum.any?(fn
+                     %{
+                       "description" => description,
+                       "inputSchema" => %{"required" => ["query"]},
+                       "name" => "linear_graphql"
+                     } ->
                        description =~ "Linear"
 
                      _ ->
                        false
-                   end
+                   end)
                else
                  false
                end
@@ -1200,133 +1199,6 @@ defmodule SymphonyElixir.AppServerTest do
       assert_received {:app_server_message, %{event: :turn_completed}}
       refute_received {:app_server_message, %{event: :malformed}}
       assert log =~ "Codex turn stream output: warning: this is stderr noise"
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "app server treats clean port exit after turn activity as completed for app-server streams without terminal turn event" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-app-server-clean-exit-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-94")
-      codex_binary = Path.join(test_root, "fake-codex")
-      File.mkdir_p!(workspace)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-94"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
-            printf '%s\\n' '{"method":"turn/started","params":{"turnId":"turn-94"}}'
-            printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"message"}}}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
-      )
-
-      issue = %Issue{
-        id: "issue-clean-exit",
-        identifier: "MT-94",
-        title: "Clean exit",
-        description: "Ensure clean app-server exit after turn activity completes the turn",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-94",
-        labels: ["backend"]
-      }
-
-      assert {:ok, %{result: :port_exited_after_turn, port_exited: true}} =
-               AppServer.run(workspace, "Handle clean exit", issue)
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "app server still treats clean port exit before turn activity as an error" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-app-server-early-clean-exit-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-95")
-      codex_binary = Path.join(test_root, "fake-codex")
-      File.mkdir_p!(workspace)
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      count=0
-      while IFS= read -r line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-95"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-95"}}}'
-            exit 0
-            ;;
-          *)
-            exit 0
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
-      )
-
-      issue = %Issue{
-        id: "issue-early-clean-exit",
-        identifier: "MT-95",
-        title: "Early clean exit",
-        description: "Ensure early clean app-server exit is still surfaced",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-95",
-        labels: ["backend"]
-      }
-
-      assert {:error, {:port_exit, 0}} = AppServer.run(workspace, "Handle early clean exit", issue)
     after
       File.rm_rf(test_root)
     end

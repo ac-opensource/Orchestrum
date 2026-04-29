@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixir.Tracker.Unsupported
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -192,17 +193,33 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
-    assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
-    assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
-    assert_receive {:memory_tracker_comment, "issue-1", "comment"}
-    assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
-    Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
-    assert :ok = Memory.create_comment("issue-1", "quiet")
-    assert :ok = Memory.update_issue_state("issue-1", "Quiet")
+    assert {:error, {:unsupported_tracker_write, "memory"}} =
+             SymphonyElixir.Tracker.create_comment("issue-1", "comment")
+
+    assert {:error, {:unsupported_tracker_write, "memory"}} =
+             SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+
+    assert {:error, {:unsupported_tracker_write, "memory"}} = Memory.create_comment("issue-1", "quiet")
+    assert {:error, {:unsupported_tracker_write, "memory"}} = Memory.update_issue_state("issue-1", "Quiet")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+  end
+
+  test "tracker reports explicit unsupported adapter errors" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+
+    assert SymphonyElixir.Tracker.adapter() == Unsupported
+    assert {:error, {:unsupported_tracker_kind, "jira"}} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert {:error, {:unsupported_tracker_kind, "jira"}} = SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+    assert {:error, {:unsupported_tracker_kind, "jira"}} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+    assert {:error, {:unsupported_tracker_write, "jira"}} = SymphonyElixir.Tracker.create_comment("issue-1", "body")
+    assert {:error, {:unsupported_tracker_write, "jira"}} = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: nil)
+    assert {:error, {:unsupported_tracker_kind, "unknown"}} = Unsupported.fetch_candidate_issues()
+    assert {:error, {:unsupported_tracker_write, "unknown"}} = Unsupported.create_comment("issue-1", "body")
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -340,44 +357,47 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
-             "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
-             "running" => [
-               %{
-                 "issue_id" => "issue-http",
-                 "issue_identifier" => "MT-HTTP",
-                 "state" => "In Progress",
-                 "worker_host" => nil,
-                 "workspace_path" => nil,
-                 "session_id" => "thread-http",
-                 "turn_count" => 7,
-                 "last_event" => "notification",
-                 "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               }
-             ],
-             "retrying" => [
-               %{
-                 "issue_id" => "issue-retry",
-                 "issue_identifier" => "MT-RETRY",
-                 "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                 "error" => "boom",
-                 "worker_host" => nil,
-                 "workspace_path" => nil
-               }
-             ],
-             "codex_totals" => %{
-               "input_tokens" => 4,
-               "output_tokens" => 8,
-               "total_tokens" => 12,
-               "seconds_running" => 42.5
-             },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+    assert state_payload["counts"] == %{"running" => 1, "retrying" => 1}
+    assert [%{"tracker_project_slug" => "project"}] = state_payload["projects"]
+    assert state_payload["polling"] == %{"checking?" => false, "next_poll_in_ms" => 25_000, "poll_interval_ms" => 30_000}
+
+    assert [
+             %{
+               "issue_id" => "issue-http",
+               "issue_identifier" => "MT-HTTP",
+               "state" => "In Progress",
+               "project" => nil,
+               "worker_host" => nil,
+               "workspace_path" => nil,
+               "session_id" => "thread-http",
+               "turn_count" => 7,
+               "last_event" => "notification",
+               "last_message" => "rendered",
+               "last_event_at" => nil,
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+             }
+           ] = state_payload["running"]
+
+    assert [
+             %{
+               "issue_id" => "issue-retry",
+               "issue_identifier" => "MT-RETRY",
+               "attempt" => 2,
+               "project" => nil,
+               "error" => "boom",
+               "worker_host" => nil,
+               "workspace_path" => nil
+             }
+           ] = state_payload["retrying"]
+
+    assert state_payload["codex_totals"] == %{
+             "input_tokens" => 4,
+             "output_tokens" => 8,
+             "total_tokens" => 12,
+             "seconds_running" => 42.5
            }
+
+    assert state_payload["rate_limits"] == %{"primary" => %{"remaining" => 11}}
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -390,10 +410,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
              },
+             "project" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
                "workspace_path" => nil,
+               "project" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -550,7 +572,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
-    refute html =~ "Refresh now"
+    assert html =~ "Refresh now"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
@@ -712,7 +734,8 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      polling: %{checking?: false, next_poll_in_ms: 25_000, poll_interval_ms: 30_000}
     }
   end
 

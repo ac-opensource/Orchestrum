@@ -329,10 +329,10 @@ defmodule SymphonyElixir.LiveE2ETest do
 
     A turn that only creates the file is incomplete. Do not stop after Step 1.
 
-    If the exact comment body below is not already present, post exactly one comment on the current issue with this exact body:
+    If the exact comment body below is not already present, use the `tracker_create_comment` tool to post exactly one comment on the current issue with this exact body:
     #{expected_comment("{{ issue.identifier }}", project_slug)}
 
-    Use these exact GraphQL operations:
+    Use this exact GraphQL operation for context:
 
     ```graphql
     query IssueContext($id: String!) {
@@ -355,25 +355,9 @@ defmodule SymphonyElixir.LiveE2ETest do
     }
     ```
 
-    ```graphql
-    mutation AddComment($issueId: String!, $body: String!) {
-      commentCreate(input: {issueId: $issueId, body: $body}) {
-        success
-      }
-    }
-    ```
-
     Step 3:
     Use the same issue-context query result to choose a workflow state whose `type` is `completed`.
-    Then move the current issue to that state with this exact mutation:
-
-    ```graphql
-    mutation CompleteIssue($id: String!, $stateId: String!) {
-      issueUpdate(id: $id, input: {stateId: $stateId}) {
-        success
-      }
-    }
-    ```
+    Then use the `tracker_update_issue_state` tool to move the current issue to that state by name.
 
     Step 4:
     Verify all outcomes with one final `linear_graphql` query against `{{ issue.id }}`:

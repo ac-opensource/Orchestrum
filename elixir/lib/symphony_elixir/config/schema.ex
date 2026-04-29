@@ -62,6 +62,23 @@ defmodule SymphonyElixir.Config.Schema do
         [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> validate_state_names(:active_states)
+      |> validate_state_names(:terminal_states)
+    end
+
+    defp validate_state_names(changeset, field) do
+      validate_change(changeset, field, fn ^field, values ->
+        cond do
+          values == [] ->
+            [{field, "must include at least one state name"}]
+
+          Enum.any?(values, &(not is_binary(&1) or String.trim(&1) == "")) ->
+            [{field, "must include only non-empty state names"}]
+
+          true ->
+            []
+        end
+      end)
     end
   end
 
@@ -97,6 +114,49 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root], empty_values: [])
+    end
+  end
+
+  defmodule Repository do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:path, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:path], empty_values: [])
+    end
+  end
+
+  defmodule Project do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema.{Repository, Tracker, Workspace}
+
+    @primary_key false
+    embedded_schema do
+      field(:id, :string)
+      field(:name, :string)
+      embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:repository, Repository, on_replace: :update, defaults_to_struct: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:id, :name], empty_values: [])
+      |> cast_embed(:tracker, with: &Tracker.changeset/2)
+      |> cast_embed(:workspace, with: &Workspace.changeset/2)
+      |> cast_embed(:repository, with: &Repository.changeset/2)
     end
   end
 
@@ -231,14 +291,16 @@ defmodule SymphonyElixir.Config.Schema do
       field(:dashboard_enabled, :boolean, default: true)
       field(:refresh_ms, :integer, default: 1_000)
       field(:render_interval_ms, :integer, default: 16)
+      field(:snapshot_timeout_ms, :integer, default: 15_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
+      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms, :snapshot_timeout_ms], empty_values: [])
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
+      |> validate_number(:snapshot_timeout_ms, greater_than: 0)
     end
   end
 
@@ -249,6 +311,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
+      field(:enabled, :boolean, default: false)
       field(:port, :integer)
       field(:host, :string, default: "127.0.0.1")
     end
@@ -256,8 +319,32 @@ defmodule SymphonyElixir.Config.Schema do
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:port, :host], empty_values: [])
+      |> cast(attrs, [:enabled, :port, :host], empty_values: [])
       |> validate_number(:port, greater_than_or_equal_to: 0)
+      |> validate_change(:host, fn :host, host ->
+        if is_binary(host) and String.trim(host) == "" do
+          [host: "must not be blank"]
+        else
+          []
+        end
+      end)
+    end
+  end
+
+  defmodule Orchestrator do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:state_path, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:state_path], empty_values: [])
     end
   end
 
@@ -265,12 +352,14 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_many(:projects, Project, on_replace: :delete)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:orchestrator, Orchestrator, on_replace: :update, defaults_to_struct: true)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -357,12 +446,14 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
+    |> cast_embed(:projects, with: &Project.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> cast_embed(:orchestrator, with: &Orchestrator.changeset/2)
   end
 
   defp finalize_settings(settings) do
@@ -377,14 +468,76 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
+    projects = Enum.map(settings.projects, &resolve_project_settings(&1, tracker, workspace))
+
     codex = %{
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    orchestrator = %{
+      settings.orchestrator
+      | state_path: resolve_optional_path(settings.orchestrator.state_path)
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, projects: projects, codex: codex, orchestrator: orchestrator}
   end
+
+  defp resolve_project_settings(project, default_tracker, default_workspace) do
+    tracker = %{
+      project.tracker
+      | kind: project.tracker.kind || default_tracker.kind,
+        endpoint: project.tracker.endpoint || default_tracker.endpoint,
+        api_key: resolve_secret_setting(project.tracker.api_key, default_tracker.api_key),
+        project_slug: project.tracker.project_slug || default_tracker.project_slug,
+        assignee: resolve_secret_setting(project.tracker.assignee, default_tracker.assignee),
+        active_states:
+          inherit_tracker_list(
+            project.tracker.active_states,
+            default_tracker.active_states,
+            %Tracker{}.active_states
+          ),
+        terminal_states:
+          inherit_tracker_list(
+            project.tracker.terminal_states,
+            default_tracker.terminal_states,
+            %Tracker{}.terminal_states
+          )
+    }
+
+    workspace = %{
+      project.workspace
+      | root: resolve_path_value(project.workspace.root, default_workspace.root)
+    }
+
+    repository = %{
+      project.repository
+      | path: resolve_optional_path(project.repository.path)
+    }
+
+    %{project | tracker: tracker, workspace: workspace, repository: repository}
+  end
+
+  defp inherit_list(value, _fallback) when is_list(value) and value != [], do: value
+  defp inherit_list(_value, fallback), do: fallback
+
+  defp inherit_tracker_list(value, fallback, schema_default) when value == schema_default and fallback != schema_default,
+    do: fallback
+
+  defp inherit_tracker_list(value, fallback, _schema_default), do: inherit_list(value, fallback)
+
+  defp resolve_optional_path(nil), do: nil
+
+  defp resolve_optional_path(value) when is_binary(value) do
+    case normalize_path_token(value) do
+      :missing -> nil
+      "" -> nil
+      path -> path
+    end
+  end
+
+  defp resolve_optional_path(_value), do: nil
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Linear.Client, Tracker}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -27,11 +27,57 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @tracker_create_comment_tool "tracker_create_comment"
+  @tracker_create_comment_description """
+  Create a comment on an issue through the configured tracker adapter.
+  """
+  @tracker_create_comment_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "body"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Tracker issue id to comment on."
+      },
+      "body" => %{
+        "type" => "string",
+        "description" => "Markdown comment body."
+      }
+    }
+  }
+
+  @tracker_update_issue_state_tool "tracker_update_issue_state"
+  @tracker_update_issue_state_description """
+  Move an issue to a workflow state through the configured tracker adapter.
+  """
+  @tracker_update_issue_state_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "state_name"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Tracker issue id to update."
+      },
+      "state_name" => %{
+        "type" => "string",
+        "description" => "Destination workflow state name."
+      }
+    }
+  }
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
+
+      @tracker_create_comment_tool ->
+        execute_tracker_create_comment(arguments, opts)
+
+      @tracker_update_issue_state_tool ->
+        execute_tracker_update_issue_state(arguments, opts)
 
       other ->
         failure_response(%{
@@ -50,6 +96,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
+      },
+      %{
+        "name" => @tracker_create_comment_tool,
+        "description" => @tracker_create_comment_description,
+        "inputSchema" => @tracker_create_comment_input_schema
+      },
+      %{
+        "name" => @tracker_update_issue_state_tool,
+        "description" => @tracker_update_issue_state_description,
+        "inputSchema" => @tracker_update_issue_state_input_schema
       }
     ]
   end
@@ -60,6 +116,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_tracker_create_comment(arguments, opts) do
+    tracker = Keyword.get(opts, :tracker, Tracker)
+
+    with {:ok, issue_id, body} <- normalize_issue_body_arguments(arguments),
+         :ok <- tracker.create_comment(issue_id, body) do
+      success_response(%{"success" => true})
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_tracker_update_issue_state(arguments, opts) do
+    tracker = Keyword.get(opts, :tracker, Tracker)
+
+    with {:ok, issue_id, state_name} <- normalize_issue_state_arguments(arguments),
+         :ok <- tracker.update_issue_state(issue_id, state_name) do
+      success_response(%{"success" => true})
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -91,6 +171,45 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
 
+  defp normalize_issue_body_arguments(arguments) when is_map(arguments) do
+    with {:ok, issue_id} <- normalize_nonempty_string(arguments, "issue_id", :missing_issue_id),
+         {:ok, body} <- normalize_nonempty_string(arguments, "body", :missing_body) do
+      {:ok, issue_id, body}
+    end
+  end
+
+  defp normalize_issue_body_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_issue_state_arguments(arguments) when is_map(arguments) do
+    with {:ok, issue_id} <- normalize_nonempty_string(arguments, "issue_id", :missing_issue_id),
+         {:ok, state_name} <- normalize_nonempty_string(arguments, "state_name", :missing_state_name) do
+      {:ok, issue_id, state_name}
+    end
+  end
+
+  defp normalize_issue_state_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_nonempty_string(arguments, key, missing_reason) do
+    arguments
+    |> argument_value(key)
+    |> normalize_required_string(missing_reason)
+  end
+
+  defp argument_value(arguments, key) do
+    Map.get(arguments, key) || Map.get(arguments, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> Map.get(arguments, key)
+  end
+
+  defp normalize_required_string(value, missing_reason) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, missing_reason}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp normalize_required_string(_value, missing_reason), do: {:error, missing_reason}
+
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
       query when is_binary(query) ->
@@ -120,6 +239,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       end
 
     dynamic_tool_response(success, encode_payload(response))
+  end
+
+  defp success_response(payload) do
+    dynamic_tool_response(true, encode_payload(payload))
   end
 
   defp failure_response(payload) do
@@ -165,6 +288,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "`linear_graphql.variables` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_issue_id) do
+    %{
+      "error" => %{
+        "message" => "Tracker write tools require a non-empty `issue_id` string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_body) do
+    %{
+      "error" => %{
+        "message" => "`tracker_create_comment` requires a non-empty `body` string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_state_name) do
+    %{
+      "error" => %{
+        "message" => "`tracker_update_issue_state` requires a non-empty `state_name` string."
+      }
+    }
+  end
+
+  defp tool_error_payload({:unsupported_tracker_write, kind}) do
+    %{
+      "error" => %{
+        "message" => "The configured tracker does not support write operations.",
+        "trackerKind" => kind
       }
     }
   end

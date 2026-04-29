@@ -20,8 +20,9 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During app-server sessions, Symphony serves client-side tracker tools. `linear_graphql` is available
+for raw Linear reads and verification, while `tracker_create_comment` and
+`tracker_update_issue_state` route comments and state changes through the configured tracker adapter.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -32,14 +33,6 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    [Harness engineering](https://openai.com/index/harness-engineering/).
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
-   - For local development, copy `.env.example` to `.env`, put the token there, and load it before
-     running Symphony:
-
-     ```bash
-     set -a
-     source .env
-     set +a
-     ```
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
@@ -70,10 +63,7 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-set -a
-source .env
-set +a
-mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
+mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
 ## Configuration
@@ -136,6 +126,13 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- For multiple projects, define a top-level `projects` list. Each project inherits top-level
+  `tracker` and `workspace` defaults and may override `tracker.project_slug`, state lists,
+  `workspace.root`, and `repository.path`.
+- `repository.path` on a project makes Symphony clone that repository into a newly created workspace
+  before running `hooks.after_create`.
+- `orchestrator.state_path` stores retry/session metadata as local JSON. When omitted, Symphony
+  writes `orchestrator_state.json` next to the configured log file.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
@@ -153,14 +150,17 @@ hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
 codex:
-  command: "$CODEX_BIN --config \"projects.\\\"$PWD\\\".trust_level=\\\"trusted\\\"\" --config 'model=\"gpt-5.5\"' app-server"
+  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
-- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- `server.enabled: true` starts the optional Phoenix LiveView dashboard and JSON API using
+  `server.port` or port `4000` when no port is set. CLI `--port` overrides workflow server config.
+- `observability.snapshot_timeout_ms` controls dashboard/API snapshot calls.
+- The dashboard/API are available at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and
+  `/api/v1/refresh`.
 
 ## Web dashboard
 
@@ -168,6 +168,7 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
+- Project/workspace/repository inventory, next-poll visibility, and a manual refresh action
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 

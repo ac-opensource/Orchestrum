@@ -48,3 +48,12 @@ Result: passed. Coverage reported `230 tests, 0 failures, 2 skipped`; dialyzer r
 - In-app browser verification loaded `http://localhost:4000/` with title `Symphony Observability`.
 - A fresh post-restart log scan found no `:response_timeout`, `port_exit`, or `Issue.links` GraphQL errors.
 - See `ISSUES_LOG.md` for the incident log and fixes.
+
+## 2026-04-29 App Rerun
+
+- Rebuilt the escript from `/Users/andrew/Documents/Symphonium/elixir` with `set -a; source .env; set +a; mise exec -- mix build`.
+- Restarted the dashboard in detached `screen` session `symphonium`.
+- Startup cleanup hooks completed, then the endpoint bound at `127.0.0.1:4000`.
+- Health check: `curl http://localhost:4000/api/v1/state` returned successfully with `running: 1` and active issue `AC-14`.
+- In-app browser reload verified `http://localhost:4000/` with title `Symphony Observability` and dashboard content present.
+- Recent log scan showed only expected startup lines for `SymphonyElixirWeb.Endpoint` on port 4000; no recent `:response_timeout`, `Issue.links`, or Linear GraphQL failure lines were present.

@@ -18,9 +18,10 @@ defmodule SymphonyElixir.Workspace do
     try do
       safe_id = safe_identifier(issue_context.issue_identifier)
 
-      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
-           :ok <- validate_workspace_path(workspace, worker_host),
+      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host, issue_context),
+           :ok <- validate_workspace_path(workspace, worker_host, issue_context.workspace_root),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
+           :ok <- maybe_bootstrap_repository(workspace, issue_context, created?, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
         {:ok, workspace}
       end
@@ -88,10 +89,12 @@ defmodule SymphonyElixir.Workspace do
   def remove(workspace), do: remove(workspace, nil)
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
-  def remove(workspace, nil) do
+  def remove(workspace, worker_host), do: remove(workspace, worker_host, Config.settings!().workspace.root)
+
+  defp remove(workspace, nil, workspace_root) do
     case File.exists?(workspace) do
       true ->
-        case validate_workspace_path(workspace, nil) do
+        case validate_workspace_path(workspace, nil, workspace_root) do
           :ok ->
             maybe_run_before_remove_hook(workspace, nil)
             File.rm_rf(workspace)
@@ -105,7 +108,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  def remove(workspace, worker_host) when is_binary(worker_host) do
+  defp remove(workspace, worker_host, _workspace_root) when is_binary(worker_host) do
     maybe_run_before_remove_hook(workspace, worker_host)
 
     script =
@@ -131,10 +134,23 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
-  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
-    safe_id = safe_identifier(identifier)
+  def remove_issue_workspaces(%{} = issue, worker_host) do
+    issue_context = issue_context(issue)
+    safe_id = safe_identifier(issue_context.issue_identifier)
 
-    case workspace_path_for_issue(safe_id, worker_host) do
+    case workspace_path_for_issue(safe_id, worker_host, issue_context) do
+      {:ok, workspace} -> remove(workspace, worker_host, issue_context.workspace_root)
+      {:error, _reason} -> :ok
+    end
+
+    :ok
+  end
+
+  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
+    issue_context = issue_context(identifier)
+    safe_id = safe_identifier(issue_context.issue_identifier)
+
+    case workspace_path_for_issue(safe_id, worker_host, issue_context) do
       {:ok, workspace} -> remove(workspace, worker_host)
       {:error, _reason} -> :ok
     end
@@ -143,11 +159,12 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
-    safe_id = safe_identifier(identifier)
+    issue_context = issue_context(identifier)
+    safe_id = safe_identifier(issue_context.issue_identifier)
 
     case Config.settings!().worker.ssh_hosts do
       [] ->
-        case workspace_path_for_issue(safe_id, nil) do
+        case workspace_path_for_issue(safe_id, nil, issue_context) do
           {:ok, workspace} -> remove(workspace, nil)
           {:error, _reason} -> :ok
         end
@@ -193,14 +210,15 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
+  defp workspace_path_for_issue(safe_id, nil, %{workspace_root: workspace_root}) when is_binary(safe_id) do
+    workspace_root
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()
   end
 
-  defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
-    {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+  defp workspace_path_for_issue(safe_id, worker_host, %{workspace_root: workspace_root})
+       when is_binary(safe_id) and is_binary(worker_host) do
+    {:ok, Path.join(workspace_root, safe_id)}
   end
 
   defp safe_identifier(identifier) do
@@ -224,6 +242,44 @@ defmodule SymphonyElixir.Workspace do
         :ok
     end
   end
+
+  defp maybe_bootstrap_repository(_workspace, _issue_context, false, _worker_host), do: :ok
+
+  defp maybe_bootstrap_repository(workspace, %{repository_path: repository_path} = issue_context, true, nil)
+       when is_binary(repository_path) do
+    Logger.info("Cloning project repository #{issue_log_context(issue_context)} repository_path=#{repository_path} workspace=#{workspace} worker_host=local")
+
+    case System.cmd("git", ["clone", "--depth", "1", repository_path, "."],
+           cd: workspace,
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        :ok
+
+      {output, status} ->
+        {:error, {:repository_clone_failed, status, output}}
+    end
+  end
+
+  defp maybe_bootstrap_repository(workspace, %{repository_path: repository_path} = issue_context, true, worker_host)
+       when is_binary(repository_path) and is_binary(worker_host) do
+    Logger.info("Cloning project repository #{issue_log_context(issue_context)} repository_path=#{repository_path} workspace=#{workspace} worker_host=#{worker_host}")
+
+    script =
+      [
+        remote_shell_assign("repository", repository_path),
+        "git clone --depth 1 \"$repository\" ."
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{script}", Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:repository_clone_failed, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_bootstrap_repository(_workspace, _issue_context, _created?, _worker_host), do: :ok
 
   defp maybe_run_before_remove_hook(workspace, nil) do
     hooks = Config.settings!().hooks
@@ -355,9 +411,9 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
+  defp validate_workspace_path(workspace, nil, workspace_root) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(workspace_root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -383,7 +439,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp validate_workspace_path(workspace, worker_host)
+  defp validate_workspace_path(workspace, worker_host, _workspace_root)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->
@@ -456,24 +512,32 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    project = Config.project_config_for_issue(issue)
+
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      workspace_root: project.workspace_root,
+      repository_path: project.repository_path
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      workspace_root: Config.settings!().workspace.root,
+      repository_path: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      workspace_root: Config.settings!().workspace.root,
+      repository_path: nil
     }
   end
 

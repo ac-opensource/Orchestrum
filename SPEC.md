@@ -330,9 +330,13 @@ Top-level keys:
 - `tracker`
 - `polling`
 - `workspace`
+- `projects`
 - `hooks`
 - `agent`
 - `codex`
+- `observability`
+- `server`
+- `orchestrator`
 
 Unknown keys SHOULD be ignored for forward compatibility.
 
@@ -381,7 +385,26 @@ Fields:
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
 
-#### 5.3.4 `hooks` (object)
+#### 5.3.4 `projects` (list of objects)
+
+Fields:
+
+- `id` (string, OPTIONAL)
+- `name` (string, OPTIONAL)
+- `tracker` (object, OPTIONAL)
+  - Inherits top-level `tracker` settings when fields are omitted.
+  - May override `kind`, `endpoint`, `api_key`, `project_slug`, `assignee`, `active_states`, and
+    `terminal_states`.
+- `workspace` (object, OPTIONAL)
+  - Inherits top-level `workspace.root` when omitted.
+- `repository.path` (path string or `$VAR`, OPTIONAL)
+  - If set, implementations MAY clone or otherwise populate this repository into a newly created
+    workspace before running workspace creation hooks.
+
+When `projects` is absent or empty, implementations SHOULD expose one default project derived from
+the top-level tracker and workspace settings.
+
+#### 5.3.5 `hooks` (object)
 
 Fields:
 
@@ -405,7 +428,7 @@ Fields:
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
-#### 5.3.5 `agent` (object)
+#### 5.3.6 `agent` (object)
 
 Fields:
 
@@ -578,6 +601,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `projects`: list of project-specific tracker/workspace/repository overrides, default `[]`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -594,6 +618,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
+- `observability.snapshot_timeout_ms`: integer, default `15000`
+- `server.enabled`: boolean, default `false`
+- `server.port`: integer or null, default `null`
+- `server.host`: string, default `127.0.0.1`
+- `orchestrator.state_path`: path or null, default implementation-defined
 
 ## 7. Orchestration State Machine
 
@@ -690,7 +719,8 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - The orchestrator serializes state mutations through one authority to avoid duplicate dispatch.
 - `claimed` and `running` checks are REQUIRED before launching any worker.
 - Reconciliation runs before dispatch on every tick.
-- Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
+- Restart recovery is tracker-driven, filesystem-driven, and may use a local durable state file for
+  retry/session metadata (without requiring an external database).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
 
 ## 8. Polling, Scheduling, and Reconciliation
@@ -1047,7 +1077,8 @@ Unsupported dynamic tool calls:
 Optional client-side tool extension:
 
 - An implementation MAY expose a limited set of client-side tools to the app-server session.
-- Current standardized optional tool: `linear_graphql`.
+- Current standardized optional tools: `linear_graphql`, `tracker_create_comment`,
+  `tracker_update_issue_state`.
 - If implemented, supported tools SHOULD be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names SHOULD still return a failure result using the targeted protocol and
@@ -1085,6 +1116,23 @@ Optional client-side tool extension:
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
 - Return the GraphQL response or error payload as structured tool output that the model can inspect
   in-session.
+
+`tracker_create_comment` extension contract:
+
+- Purpose: create a tracker comment through the configured tracker adapter.
+- Preferred input shape: `{"issue_id":"tracker issue id","body":"Markdown body"}`.
+- `issue_id` and `body` MUST be non-empty strings.
+- On success, return `success=true` with a structured success payload.
+- Unsupported tracker writes MUST fail explicitly, for example
+  `{:unsupported_tracker_write, tracker_kind}` mapped into tool output.
+
+`tracker_update_issue_state` extension contract:
+
+- Purpose: move a tracker issue to a workflow state through the configured tracker adapter.
+- Preferred input shape: `{"issue_id":"tracker issue id","state_name":"workflow state name"}`.
+- `issue_id` and `state_name` MUST be non-empty strings.
+- On success, return `success=true` with a structured success payload.
+- Unsupported tracker writes MUST fail explicitly.
 
 User-input-required policy:
 
@@ -1145,6 +1193,14 @@ An implementation MUST support these tracker adapter operations:
 3. `fetch_issue_states_by_ids(issue_ids)`
    - Used for active-run reconciliation.
 
+Implementations that expose tracker write tools MUST also provide explicit adapter operations for:
+
+4. `create_comment(issue_id, body)`
+   - Creates a comment or returns an explicit unsupported/error tuple.
+
+5. `update_issue_state(issue_id, state_name)`
+   - Moves an issue to a named workflow state or returns an explicit unsupported/error tuple.
+
 ### 11.2 Query Semantics (Linear)
 
 Linear-specific requirements for `tracker.kind == "linear"`:
@@ -1199,15 +1255,18 @@ Orchestrator behavior on tracker errors:
 
 ### 11.5 Tracker Writes (Important Boundary)
 
-Symphony does not require first-class tracker write APIs in the orchestrator.
+Symphony does not require the orchestrator itself to mutate tracker state, but implementations may
+expose first-class tracker write APIs to the coding-agent toolchain.
 
 - Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
   agent using tools defined by the workflow prompt.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
-- If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
-  toolchain rather than orchestrator business logic.
+- Prefer first-class tracker write tools for comments and state transitions. Keep `linear_graphql`
+  available for reads/query verification or genuinely raw Linear operations.
+- If the client-side tool extensions are implemented, they are still part of the agent toolchain
+  rather than orchestrator business logic.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -1354,17 +1413,26 @@ If implemented:
 
 Extension config:
 
+- `server.enabled` (boolean, OPTIONAL)
+  - Default: `false`.
+  - Enables the HTTP server extension when true.
 - `server.port` (integer, OPTIONAL)
-  - Enables the HTTP server extension.
+  - Selects the HTTP server port.
   - `0` requests an ephemeral port for local development and tests.
   - CLI `--port` overrides `server.port` when both are present.
+- `server.host` (string, OPTIONAL)
+  - Default: `127.0.0.1`.
+- `observability.snapshot_timeout_ms` (integer, OPTIONAL)
+  - Default: `15000`.
+  - Controls synchronous snapshot calls used by the dashboard/API.
 
 Enablement (extension):
 
 - Start the HTTP server when a CLI `--port` argument is provided.
-- Start the HTTP server when `server.port` is present in `WORKFLOW.md` front matter.
+- Start the HTTP server when `server.enabled` is true in `WORKFLOW.md` front matter.
 - The `server` top-level key is owned by this extension.
-- Positive `server.port` values bind that port.
+- Positive `server.port` values bind that port; if `server.enabled` is true and no port is set, an
+  implementation MAY use port `4000`.
 - Implementations SHOULD bind loopback by default (`127.0.0.1` or host equivalent) unless explicitly
   configured otherwise.
 - Changes to HTTP listener settings (for example `server.port`) do not need to hot-rebind;
@@ -1396,10 +1464,17 @@ Minimum endpoints:
         "running": 2,
         "retrying": 1
       },
+      "projects": [],
+      "polling": {
+        "checking?": false,
+        "next_poll_in_ms": 25000,
+        "poll_interval_ms": 30000
+      },
       "running": [
         {
           "issue_id": "abc123",
           "issue_identifier": "MT-649",
+          "project": null,
           "state": "In Progress",
           "session_id": "thread-1-turn-1",
           "turn_count": 7,
@@ -1418,6 +1493,7 @@ Minimum endpoints:
         {
           "issue_id": "def456",
           "issue_identifier": "MT-650",
+          "project": null,
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
@@ -1572,16 +1648,17 @@ API design notes:
 
 ### 14.3 Partial State Recovery (Restart)
 
-Current design is intentionally in-memory for scheduler state.
-Restart recovery means the service can resume useful operation by polling tracker state and reusing
-preserved workspaces. It does not mean retry timers, running sessions, or live worker state survive
-process restart.
+Current design keeps live process state in memory and may persist retry/session metadata to a local
+JSON state file. Restart recovery means the service can resume useful operation by polling tracker
+state, reusing preserved workspaces, and rehydrating enough retry/session metadata for observability
+and retry flow. It does not mean live worker processes survive process restart.
 
 After restart:
 
-- No retry timers are restored from prior process memory.
+- Retry timers may be reconstructed from durable retry metadata.
 - No running sessions are assumed recoverable.
 - Service recovers by:
+  - loading local orchestrator state when configured/available
   - startup terminal workspace cleanup
   - fresh polling of active issues
   - re-dispatching eligible work

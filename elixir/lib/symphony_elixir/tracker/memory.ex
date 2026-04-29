@@ -36,15 +36,13 @@ defmodule SymphonyElixir.Tracker.Memory do
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
-  def create_comment(issue_id, body) do
-    send_event({:memory_tracker_comment, issue_id, body})
-    :ok
+  def create_comment(_issue_id, _body) do
+    {:error, {:unsupported_tracker_write, "memory"}}
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
-  def update_issue_state(issue_id, state_name) do
-    send_event({:memory_tracker_state_update, issue_id, state_name})
-    :ok
+  def update_issue_state(_issue_id, _state_name) do
+    {:error, {:unsupported_tracker_write, "memory"}}
   end
 
   defp configured_issues do
@@ -53,13 +51,6 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   defp issue_entries do
     Enum.filter(configured_issues(), &match?(%Issue{}, &1))
-  end
-
-  defp send_event(message) do
-    case Application.get_env(:symphony_elixir, :memory_tracker_recipient) do
-      pid when is_pid(pid) -> send(pid, message)
-      _ -> :ok
-    end
   end
 
   defp normalize_state(state) when is_binary(state) do

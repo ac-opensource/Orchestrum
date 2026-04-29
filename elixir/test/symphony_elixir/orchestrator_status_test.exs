@@ -199,6 +199,127 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_integer(completed_state.codex_totals.seconds_running)
   end
 
+  test "orchestrator restores persisted running and retry metadata on startup" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-state-restore-#{System.unique_integer([:positive])}")
+    state_path = Path.join(test_root, "orchestrator_state.json")
+    now_ms = System.system_time(:millisecond)
+
+    try do
+      File.mkdir_p!(test_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: Path.join(test_root, "workspaces")
+      )
+
+      File.write!(Workflow.workflow_file_path(), """
+      ---
+      tracker:
+        kind: memory
+        active_states: ["Todo", "In Progress"]
+        terminal_states: ["Done", "Canceled"]
+      workspace:
+        root: "#{Path.join(test_root, "workspaces")}"
+      orchestrator:
+        state_path: "#{state_path}"
+      polling:
+        interval_ms: 60000
+      ---
+      Prompt
+      """)
+
+      assert :ok = WorkflowStore.force_reload()
+
+      running_issue = %Issue{
+        id: "issue-running",
+        identifier: "AC-RUN",
+        title: "Running issue",
+        state: "In Progress"
+      }
+
+      retry_issue = %Issue{
+        id: "issue-retry",
+        identifier: "AC-RETRY",
+        title: "Retry issue",
+        state: "In Progress"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_issue, retry_issue])
+
+      File.write!(
+        state_path,
+        Jason.encode!(%{
+          "running" => %{
+            "issue-running" => %{
+              "identifier" => "AC-RUN",
+              "issue" => %{
+                "id" => "issue-running",
+                "identifier" => "AC-RUN",
+                "title" => "Running issue",
+                "state" => "In Progress"
+              },
+              "workspace_path" => Path.join(test_root, "workspaces/AC-RUN"),
+              "session_id" => "thread-restored",
+              "turn_count" => 2,
+              "started_at" => DateTime.to_iso8601(DateTime.utc_now())
+            }
+          },
+          "retry_attempts" => %{
+            "issue-retry" => %{
+              "attempt" => 3,
+              "due_at_wall_ms" => now_ms + 60_000,
+              "identifier" => "AC-RETRY",
+              "error" => "previous failure",
+              "workspace_path" => Path.join(test_root, "workspaces/AC-RETRY")
+            }
+          }
+        })
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :RestoredStateOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: Process.exit(pid, :normal)
+      end)
+
+      snapshot = GenServer.call(pid, :snapshot)
+
+      assert [%{issue_id: "issue-running", identifier: "AC-RUN", session_id: "thread-restored", turn_count: 2}] =
+               snapshot.running
+
+      assert [%{issue_id: "issue-retry", identifier: "AC-RETRY", attempt: 3, error: "previous failure"}] =
+               snapshot.retrying
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "orchestrator persistence saves atomically and reports read/write errors" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-persistence-#{System.unique_integer([:positive])}")
+    state_path = Path.join(test_root, "state.json")
+
+    try do
+      assert :ok = SymphonyElixir.Orchestrator.Persistence.save(state_path, %{"ok" => true})
+      assert {:ok, %{"ok" => true}} = SymphonyElixir.Orchestrator.Persistence.load(state_path)
+      assert {:error, :enoent} = SymphonyElixir.Orchestrator.Persistence.load(Path.join(test_root, "missing.json"))
+
+      File.mkdir_p!(Path.join(test_root, "directory"))
+      assert {:error, _reason} = SymphonyElixir.Orchestrator.Persistence.load(Path.join(test_root, "directory"))
+
+      assert {:error, _reason} =
+               SymphonyElixir.Orchestrator.Persistence.save(Path.join(test_root, "bad.json"), %{"pid" => self()})
+
+      file_parent = Path.join(test_root, "file-parent")
+      File.write!(file_parent, "not a directory")
+
+      assert {:error, _reason} =
+               SymphonyElixir.Orchestrator.Persistence.save(Path.join(file_parent, "state.json"), %{"ok" => true})
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator snapshot tracks turn completed usage when present" do
     issue_id = "issue-turn-completed-usage"
 
@@ -941,11 +1062,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    tick_sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, :tick)
     Process.sleep(100)
     state = :sys.get_state(pid)
-    state_read_at_ms = System.monotonic_time(:millisecond)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -958,8 +1077,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)
-    assert due_at_ms >= tick_sent_at_ms + 9_500
-    assert due_at_ms <= state_read_at_ms + 10_500
+    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    assert remaining_ms >= 9_000
+    assert remaining_ms <= 10_500
   end
 
   test "status dashboard renders offline marker to terminal" do

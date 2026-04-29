@@ -17,6 +17,11 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/code/symphony-workspaces
+observability:
+  snapshot_timeout_ms: 15000
+server:
+  enabled: false
+  host: 127.0.0.1
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .

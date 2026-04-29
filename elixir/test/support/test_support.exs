@@ -52,6 +52,13 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def write_workflow_file!(path, overrides \\ []) do
+    overrides =
+      Keyword.put_new(
+        overrides,
+        :orchestrator_state_path,
+        Path.join(Path.dirname(path), "orchestrator_state.json")
+      )
+
     workflow = workflow_content(overrides)
     File.write!(path, workflow)
 
@@ -122,8 +129,11 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          observability_snapshot_timeout_ms: 15_000,
+          server_enabled: nil,
           server_port: nil,
           server_host: nil,
+          orchestrator_state_path: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -159,8 +169,11 @@ defmodule SymphonyElixir.TestSupport do
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    observability_snapshot_timeout_ms = Keyword.get(config, :observability_snapshot_timeout_ms)
+    server_enabled = Keyword.get(config, :server_enabled)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    orchestrator_state_path = Keyword.get(config, :orchestrator_state_path)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -193,8 +206,14 @@ defmodule SymphonyElixir.TestSupport do
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
-        observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
-        server_yaml(server_port, server_host),
+        observability_yaml(
+          observability_enabled,
+          observability_refresh_ms,
+          observability_render_interval_ms,
+          observability_snapshot_timeout_ms
+        ),
+        server_yaml(server_enabled, server_port, server_host),
+        orchestrator_yaml(orchestrator_state_path),
         "---",
         prompt
       ]
@@ -255,25 +274,37 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp observability_yaml(enabled, refresh_ms, render_interval_ms) do
+  defp observability_yaml(enabled, refresh_ms, render_interval_ms, snapshot_timeout_ms) do
     [
       "observability:",
       "  dashboard_enabled: #{yaml_value(enabled)}",
       "  refresh_ms: #{yaml_value(refresh_ms)}",
-      "  render_interval_ms: #{yaml_value(render_interval_ms)}"
+      "  render_interval_ms: #{yaml_value(render_interval_ms)}",
+      "  snapshot_timeout_ms: #{yaml_value(snapshot_timeout_ms)}"
     ]
     |> Enum.join("\n")
   end
 
-  defp server_yaml(nil, nil), do: nil
+  defp server_yaml(nil, nil, nil), do: nil
 
-  defp server_yaml(port, host) do
+  defp server_yaml(enabled, port, host) do
     [
       "server:",
+      is_boolean(enabled) && "  enabled: #{yaml_value(enabled)}",
       port && "  port: #{yaml_value(port)}",
       host && "  host: #{yaml_value(host)}"
     ]
-    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp orchestrator_yaml(nil), do: nil
+
+  defp orchestrator_yaml(state_path) do
+    [
+      "orchestrator:",
+      "  state_path: #{yaml_value(state_path)}"
+    ]
     |> Enum.join("\n")
   end
 

@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Config
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -14,6 +15,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:refresh_notice, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -38,6 +40,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("refresh_now", _params, socket) do
+    notice =
+      case Presenter.refresh_payload(orchestrator()) do
+        {:ok, %{coalesced: true}} -> "Refresh already queued"
+        {:ok, _payload} -> "Refresh queued"
+        {:error, :unavailable} -> "Orchestrator unavailable"
+      end
+
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:now, DateTime.utc_now())
+     |> assign(:refresh_notice, notice)}
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell">
@@ -56,6 +74,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
+            <button type="button" class="subtle-button" phx-click="refresh_now">
+              Refresh now
+            </button>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live
@@ -64,6 +85,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <span class="status-badge-dot"></span>
               Offline
             </span>
+            <%= if @refresh_notice do %>
+              <span class="muted"><%= @refresh_notice %></span>
+            <% end %>
           </div>
         </div>
       </header>
@@ -104,6 +128,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
           </article>
+
+          <article class="metric-card">
+            <p class="metric-label">Next poll</p>
+            <p class="metric-value numeric"><%= format_polling(@payload.polling) %></p>
+            <p class="metric-detail">Poll interval <%= format_poll_interval(@payload.polling) %>.</p>
+          </article>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Projects</h2>
+              <p class="section-copy">Configured project, workspace, and repository context.</p>
+            </div>
+          </div>
+
+          <%= if @payload.projects == [] do %>
+            <p class="empty-state">No configured projects.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 760px;">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Tracker</th>
+                    <th>Workspace root</th>
+                    <th>Repository</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={project <- @payload.projects}>
+                    <td><%= project.name || project.id %></td>
+                    <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
+                    <td class="mono"><%= project.workspace_root %></td>
+                    <td class="mono"><%= project.repository_path || "default hook" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </section>
 
         <section class="section-card">
@@ -132,6 +196,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <table class="data-table data-table-running">
                 <colgroup>
                   <col style="width: 12rem;" />
+                  <col style="width: 10rem;" />
                   <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
@@ -141,6 +206,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Project</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -156,6 +222,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
+                    <td><%= project_label(entry.project) %></td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
@@ -222,6 +289,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Project</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -235,6 +303,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
+                    <td><%= project_label(entry.project) %></td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
                     <td><%= entry.error || "n/a" %></td>
@@ -258,7 +327,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp snapshot_timeout_ms do
-    Endpoint.config(:snapshot_timeout_ms) || 15_000
+    Endpoint.config(:snapshot_timeout_ms) || Config.snapshot_timeout_ms()
   end
 
   defp completed_runtime_seconds(payload) do
@@ -285,6 +354,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
     secs = rem(whole_seconds, 60)
     "#{mins}m #{secs}s"
   end
+
+  defp format_polling(%{checking?: true}), do: "checking"
+  defp format_polling(%{next_poll_in_ms: ms}) when is_integer(ms), do: format_runtime_seconds(ms / 1_000)
+  defp format_polling(_polling), do: "n/a"
+
+  defp format_poll_interval(%{poll_interval_ms: ms}) when is_integer(ms), do: format_runtime_seconds(ms / 1_000)
+  defp format_poll_interval(_polling), do: "n/a"
+
+  defp project_label(nil), do: "n/a"
+  defp project_label(%{name: name}) when is_binary(name) and name != "", do: name
+  defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
+  defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
+  defp project_label(_project), do: "n/a"
 
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
     DateTime.diff(now, started_at, :second)

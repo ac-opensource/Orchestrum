@@ -6,7 +6,7 @@ defmodule SymphonyElixir.WorkflowStore do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.Workflow
+  alias SymphonyElixir.{Config.Schema, Workflow}
 
   @poll_interval_ms 1_000
 
@@ -130,6 +130,7 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp load_state(path) do
     with {:ok, workflow} <- Workflow.load(path),
+         {:ok, _settings} <- Schema.parse(workflow.config),
          {:ok, stamp} <- current_stamp(path) do
       {:ok, %State{path: path, stamp: stamp, workflow: workflow}}
     else

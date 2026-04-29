@@ -4,23 +4,24 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   alias SymphonyElixir.Codex.DynamicTool
 
   test "tool_specs advertises the linear_graphql input contract" do
-    assert [
-             %{
-               "description" => description,
-               "inputSchema" => %{
-                 "properties" => %{
-                   "query" => _,
-                   "variables" => _
-                 },
-                 "required" => ["query"],
-                 "type" => "object"
+    specs = DynamicTool.tool_specs()
+
+    assert %{
+             "description" => description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "query" => _,
+                 "variables" => _
                },
-               "name" => "linear_graphql"
-             }
-           ] = DynamicTool.tool_specs()
+               "required" => ["query"],
+               "type" => "object"
+             },
+             "name" => "linear_graphql"
+           } = Enum.find(specs, &(&1["name"] == "linear_graphql"))
 
     assert description =~ "Linear"
-    assert description =~ "no links field"
+    assert Enum.any?(specs, &(&1["name"] == "tracker_create_comment"))
+    assert Enum.any?(specs, &(&1["name"] == "tracker_update_issue_state"))
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -31,7 +32,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "tracker_create_comment", "tracker_update_issue_state"]
              }
            }
 
@@ -41,6 +42,72 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "tracker_create_comment calls the configured tracker write boundary" do
+    Process.put(:dynamic_tool_test_pid, self())
+
+    defmodule TrackerCreateCommentFake do
+      def create_comment(issue_id, body) do
+        send(Process.get(:dynamic_tool_test_pid), {:create_comment, issue_id, body})
+        :ok
+      end
+    end
+
+    response =
+      DynamicTool.execute(
+        "tracker_create_comment",
+        %{"issue_id" => "issue-1", "body" => "hello"},
+        tracker: TrackerCreateCommentFake
+      )
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"success" => true}
+    assert_received {:create_comment, "issue-1", "hello"}
+  end
+
+  test "tracker_update_issue_state calls the configured tracker write boundary" do
+    Process.put(:dynamic_tool_test_pid, self())
+
+    defmodule TrackerUpdateStateFake do
+      def update_issue_state(issue_id, state_name) do
+        send(Process.get(:dynamic_tool_test_pid), {:update_issue_state, issue_id, state_name})
+        :ok
+      end
+    end
+
+    response =
+      DynamicTool.execute(
+        "tracker_update_issue_state",
+        %{"issue_id" => "issue-1", "state_name" => "Human Review"},
+        tracker: TrackerUpdateStateFake
+      )
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"success" => true}
+    assert_received {:update_issue_state, "issue-1", "Human Review"}
+  end
+
+  test "tracker write tools surface unsupported tracker writes explicitly" do
+    defmodule TrackerUnsupportedWriteFake do
+      def create_comment(_issue_id, _body), do: {:error, {:unsupported_tracker_write, "memory"}}
+    end
+
+    response =
+      DynamicTool.execute(
+        "tracker_create_comment",
+        %{"issue_id" => "issue-1", "body" => "hello"},
+        tracker: TrackerUnsupportedWriteFake
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "message" => "The configured tracker does not support write operations.",
+               "trackerKind" => "memory"
+             }
+           }
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

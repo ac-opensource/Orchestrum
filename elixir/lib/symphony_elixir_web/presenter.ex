@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, ProjectConfig, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -17,6 +17,8 @@ defmodule SymphonyElixirWeb.Presenter do
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)
           },
+          projects: Enum.map(Config.project_configs(), &ProjectConfig.summary/1),
+          polling: snapshot.polling,
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
@@ -69,6 +71,7 @@ defmodule SymphonyElixirWeb.Presenter do
         path: workspace_path(issue_identifier, running, retry),
         host: workspace_host(running, retry)
       },
+      project: project_from_entries(running, retry),
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -100,6 +103,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
+      project: project_payload(Map.get(entry, :project)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -123,6 +127,7 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      project: project_payload(Map.get(entry, :project)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
     }
@@ -132,6 +137,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
+      project: project_payload(Map.get(running, :project)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -152,6 +158,7 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
+      project: project_payload(Map.get(retry, :project)),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
     }
@@ -166,6 +173,22 @@ defmodule SymphonyElixirWeb.Presenter do
   defp workspace_host(running, retry) do
     (running && Map.get(running, :worker_host)) || (retry && Map.get(retry, :worker_host))
   end
+
+  defp project_from_entries(running, retry) do
+    project_payload((running && Map.get(running, :project)) || (retry && Map.get(retry, :project)))
+  end
+
+  defp project_payload(nil), do: nil
+
+  defp project_payload(project) when is_map(project) do
+    %{
+      id: project[:id] || project["id"],
+      name: project[:name] || project["name"],
+      slug: project[:slug] || project["slug"] || project[:slug_id] || project["slug_id"] || project["slugId"]
+    }
+  end
+
+  defp project_payload(_project), do: nil
 
   defp recent_events_payload(running) do
     [

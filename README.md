@@ -1,7 +1,8 @@
 # Symphony
 
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+work instead of supervising coding agents. A single service can route work across configured
+projects, prepare project-specific workspaces, and expose operator-facing runtime state.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 
