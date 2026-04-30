@@ -9,13 +9,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @dashboard_views [
-    %{id: "overview", label: "Command Center", path: "/", icon: "CC"},
-    %{id: "tasks", label: "Task Manager", path: "/tasks", icon: "TM"},
-    %{id: "runs", label: "Run Monitor", path: "/runs", icon: "RN"},
-    %{id: "projects", label: "Agent Config", path: "/projects", icon: "AG"},
-    %{id: "controls", label: "Workflow Builder", path: "/controls", icon: "WF"},
-    %{id: "settings", label: "System Settings", path: "/settings", icon: "ST"},
-    %{id: "diagnostics", label: "Audit Logs", path: "/diagnostics", icon: "LG"}
+    %{id: "overview", label: "Command Center", path: "/", icon: "dashboard"},
+    %{id: "tasks", label: "Task Manager", path: "/tasks", icon: "account_tree"},
+    %{id: "runs", label: "Run Monitor", path: "/runs", icon: "timeline"},
+    %{id: "projects", label: "Agent Config", path: "/projects", icon: "smart_toy"},
+    %{id: "controls", label: "Workflow Builder", path: "/controls", icon: "hub"},
+    %{id: "settings", label: "System Settings", path: "/settings", icon: "settings"},
+    %{id: "diagnostics", label: "Audit Logs", path: "/diagnostics", icon: "terminal"}
   ]
   @view_ids Enum.map(@dashboard_views, & &1.id)
 
@@ -299,11 +299,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="dashboard-shell" aria-labelledby="dashboard-title">
+    <section class={["dashboard-shell", "dashboard-view-#{@current_view}"]} aria-labelledby="dashboard-title">
       <aside class="command-rail" aria-label="Orchestrum command navigation">
         <div class="brand-lockup">
-          <p class="brand-title">Orchestrum</p>
-          <p class="brand-subtitle">AI Orchestration</p>
+          <p class="brand-title">AION-OS</p>
+          <p class="brand-subtitle">Orchestrum Runtime</p>
         </div>
 
         <nav class="section-nav" aria-label="Dashboard sections">
@@ -314,7 +314,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               aria-current={if item.id == @current_view, do: "page", else: nil}
               data-dashboard-view={item.id}
             >
-              <span class="nav-icon" aria-hidden="true"><%= item.icon %></span>
+              <span class="nav-icon material-symbols-outlined" aria-hidden="true"><%= item.icon %></span>
               <span><%= item.label %></span>
               <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
                 <span class="nav-count numeric"><%= count %></span>
@@ -322,6 +322,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </.link>
           <% end %>
         </nav>
+
+        <.link patch={dashboard_project_path(dashboard_view_path("controls"), @selected_project_id)} class="rail-deploy-link">
+          <span class="material-symbols-outlined" aria-hidden="true">add_circle</span>
+          <span>New Deployment</span>
+        </.link>
 
         <div class="rail-footer" aria-label="Support links">
           <.link
@@ -337,7 +342,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       <header class="dashboard-header">
         <div class="dashboard-header-main">
-          <div>
+          <div class="dashboard-heading">
             <p class="eyebrow">System Monitor</p>
             <h1 id="dashboard-title" class="dashboard-title">
               Operations Command Center
@@ -347,7 +352,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
           </div>
 
+          <div class="dashboard-search" role="search">
+            <span class="material-symbols-outlined" aria-hidden="true">search</span>
+            <input type="search" placeholder="Search operational logs..." aria-label="Search operational logs" />
+          </div>
+
           <div class="toolbar" aria-label="Dashboard actions">
+            <button type="button" class="icon-button header-icon" aria-label="Notifications" title="Notifications">
+              <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
+            </button>
+            <button type="button" class="icon-button header-icon" aria-label="Sensors" title="Sensors">
+              <span class="material-symbols-outlined" aria-hidden="true">sensors</span>
+            </button>
+            <.link patch={dashboard_project_path(dashboard_view_path("controls"), @selected_project_id)} class="deploy-button">
+              <span>Deploy Agent</span>
+            </.link>
             <button
               type="button"
               class="toolbar-button"
@@ -369,7 +388,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </button>
             <button
               type="button"
-              class="subtle-button"
+              class="subtle-button header-control"
               phx-click="control"
               phx-value-action={global_polling_action(@payload)}
               data-confirm={global_polling_confirm(@payload)}
@@ -392,6 +411,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <%= if @control_notice do %>
               <span class="muted"><%= @control_notice %></span>
             <% end %>
+            <button type="button" class="icon-button header-icon" aria-label="Account" title="Account">
+              <span class="material-symbols-outlined" aria-hidden="true">account_circle</span>
+            </button>
           </div>
         </div>
       </header>
@@ -562,7 +584,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
-        <section id="overview" class="ops-panel" aria-labelledby="overview-title">
+        <section :if={@current_view == "overview"} id="overview" class="ops-panel" aria-labelledby="overview-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Overview</p>
@@ -606,7 +628,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section id="tasks" class="ops-panel task-board-section" aria-labelledby="tasks-title">
+        <section :if={@current_view == "tasks"} id="tasks" class="ops-panel task-board-section" aria-labelledby="tasks-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Tasks</p>
@@ -799,7 +821,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section id="runtime-queue" class="ops-panel" aria-labelledby="runtime-queue-title">
+        <section :if={@current_view == "overview"} id="runtime-queue" class="ops-panel" aria-labelledby="runtime-queue-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Runtime</p>
@@ -903,7 +925,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section id="mcp-servers" class="ops-panel" aria-labelledby="mcp-servers-title">
+        <section :if={@current_view == "diagnostics"} id="mcp-servers" class="ops-panel" aria-labelledby="mcp-servers-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Diagnostics</p>
@@ -966,7 +988,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section id="runs" class="ops-panel" aria-labelledby="runs-title">
+        <section :if={@current_view == "runs"} id="runs" class="ops-panel" aria-labelledby="runs-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Runs</p>
@@ -1104,7 +1126,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section id="projects" class="ops-panel" aria-labelledby="projects-title">
+        <section :if={@current_view == "projects"} id="projects" class="ops-panel" aria-labelledby="projects-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Projects</p>
@@ -1317,7 +1339,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section id="retry-controls" class="ops-panel" aria-labelledby="retry-controls-title">
+        <section :if={@current_view == "controls"} id="retry-controls" class="ops-panel" aria-labelledby="retry-controls-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Retries</p>
@@ -1389,7 +1411,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
 
         <%= if @payload.claimed != [] do %>
-          <section id="claimed-controls" class="ops-panel" aria-labelledby="claimed-controls-title">
+          <section
+            :if={@current_view == "controls"}
+            id="claimed-controls"
+            class="ops-panel"
+            aria-labelledby="claimed-controls-title"
+          >
             <div class="section-header">
               <div>
                 <p class="section-kicker">Claims</p>
@@ -1430,13 +1457,109 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
-        <section id="controls" class="ops-panel" aria-labelledby="controls-title">
+        <section :if={@current_view == "controls"} id="controls" class="ops-panel" aria-labelledby="controls-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Controls</p>
               <h2 id="controls-title" class="section-title">Operator controls</h2>
               <p class="section-copy">Manual actions that change runtime or workflow state.</p>
             </div>
+          </div>
+
+          <div class="workflow-builder-shell" aria-label="Workflow logic builder preview">
+            <aside class="node-library" aria-label="Node library">
+              <h3>Node Library</h3>
+              <div class="node-group">
+                <p>Triggers</p>
+                <article class="node-chip">
+                  <span class="material-symbols-outlined" aria-hidden="true">webhook</span>
+                  <span>
+                    <strong>Tracker poll</strong>
+                    <small>Linear candidate sync</small>
+                  </span>
+                </article>
+                <article class="node-chip">
+                  <span class="material-symbols-outlined" aria-hidden="true">schedule</span>
+                  <span>
+                    <strong>Retry window</strong>
+                    <small>Backoff scheduler</small>
+                  </span>
+                </article>
+              </div>
+              <div class="node-group">
+                <p>Agent Tasks</p>
+                <article class="node-chip">
+                  <span class="material-symbols-outlined" aria-hidden="true">psychology</span>
+                  <span>
+                    <strong>Codex turn</strong>
+                    <small>App-server session</small>
+                  </span>
+                </article>
+                <article class="node-chip">
+                  <span class="material-symbols-outlined" aria-hidden="true">terminal</span>
+                  <span>
+                    <strong>Validation</strong>
+                    <small>Repo command gate</small>
+                  </span>
+                </article>
+              </div>
+            </aside>
+
+            <div class="workflow-canvas" aria-label="Current orchestration flow">
+              <div class="canvas-status">
+                <span class="status-badge status-badge-live">
+                  <span class="status-badge-dot"></span>
+                  LIVE_READY
+                </span>
+                <span class="numeric"><%= visible_task_count(@payload, @selected_project_id) %> active paths</span>
+              </div>
+
+              <div class="flow-node flow-node-trigger">
+                <span class="node-id mono">#tr-poll</span>
+                <strong>Poll Candidate Issues</strong>
+                <small>Project-scoped tracker read</small>
+              </div>
+              <div class="flow-edge flow-edge-one" aria-hidden="true"></div>
+              <div class="flow-node flow-node-agent">
+                <span class="node-id mono">#agent-codex</span>
+                <strong>Run Codex Worker</strong>
+                <small>
+                  <%= visible_running_count(@payload, @selected_project_id) %> running ·
+                  <%= visible_retrying_count(@payload, @selected_project_id) %> retrying
+                </small>
+              </div>
+              <div class="flow-edge flow-edge-two" aria-hidden="true"></div>
+              <div class="flow-node flow-node-logic">
+                <span class="node-id mono">#gate-review</span>
+                <strong>Review State Gate</strong>
+                <small>Human Review / Merging / Done</small>
+              </div>
+            </div>
+
+            <aside class="properties-panel" aria-label="Selected node properties">
+              <h3>Properties</h3>
+              <div class="property-card">
+                <span class="material-symbols-outlined" aria-hidden="true">psychology</span>
+                <div>
+                  <strong>Codex Worker</strong>
+                  <small>AGENT_TYPE: APP_SERVER</small>
+                </div>
+              </div>
+              <dl>
+                <div>
+                  <dt>Precision</dt>
+                  <dd>Workflow configured</dd>
+                </div>
+                <div>
+                  <dt>Response format</dt>
+                  <dd>Linear workpad + PR handoff</dd>
+                </div>
+                <div>
+                  <dt>Connected integrations</dt>
+                  <dd>Tracker, GitHub, local repo checks</dd>
+                </div>
+              </dl>
+            </aside>
           </div>
 
           <div class="control-grid">
@@ -1485,9 +1608,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section id="settings" class="ops-panel" aria-labelledby="settings-title">
+        <section :if={@current_view == "settings"} id="settings" class="ops-panel" aria-labelledby="settings-title">
           <% settings_project = selected_settings_project(@payload, @settings_project_id, @selected_project_id) %>
-
           <div class="section-header">
             <div>
               <p class="section-kicker">Settings</p>
@@ -1535,7 +1657,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section id="diagnostics" class="ops-panel" aria-labelledby="diagnostics-title">
+        <section :if={@current_view == "diagnostics"} id="diagnostics" class="ops-panel" aria-labelledby="diagnostics-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Diagnostics</p>
