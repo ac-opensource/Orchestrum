@@ -1673,13 +1673,23 @@ Minimum endpoints:
     }
     ```
 
+- `POST /api/v1/control/polling/{pause,resume}`
+  - Pauses or resumes global polling through the orchestrator.
+  - Successful responses use an auditable result envelope with `ok`, `action`, `status`,
+    `message`, `target`, `result_id`, and `requested_at`.
+- `POST /api/v1/control/projects/<project_id>/{pause,resume,dispatch}`
+  - Pauses or resumes polling for a configured project, or requests immediate project dispatch.
+  - Dispatch requests report whether the request was queued, coalesced, or rejected.
+- `POST /api/v1/control/issues/<issue_identifier>/{cancel,retry,clear_retry,release_claim}`
+  - Cancels an active run, retries a retry entry now, clears a retry entry, or releases a safe
+    stale claim for the identified issue.
+  - Unsafe transitions return explicit error envelopes rather than pretending local state changed.
 - `POST /api/v1/control/<control_action>`
-  - Invokes an explicit orchestrator control boundary. Supported action names are
-    `pause`, `resume`, `dispatch-now`, `stop`, `cancel`, `retry-now`, `clear-retry`, and
-    `release-claim`.
+  - Compatibility endpoint for generic global/issue controls. Supported action names are `pause`,
+    `resume`, `dispatch-now`, `stop`, `cancel`, `retry-now`, `clear-retry`, and `release-claim`.
   - Issue-scoped actions accept `issue_id` or `issue_identifier` in the request body. `dispatch-now`
     can be called without issue fields.
-  - Successful responses use a success envelope:
+  - Successful compatibility responses use a success envelope:
 
     ```json
     {
@@ -1707,6 +1717,9 @@ Minimum endpoints:
       }
     }
     ```
+
+Control endpoints MAY require `x-orchestrum-control-token` when the HTTP extension is configured
+with a control token.
 
 API design notes:
 

@@ -32,6 +32,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:current_view, "overview")
       |> assign(:selected_project_id, "all")
       |> assign(:refresh_notice, nil)
+      |> assign(:control_notice, nil)
       |> assign(:task_filter, "all")
       |> assign(:project_action_notice, nil)
       |> assign(:project_action_error, nil)
@@ -77,6 +78,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     notice =
       case Presenter.refresh_payload(orchestrator()) do
         {:ok, %{coalesced: true}} -> "Refresh already queued"
+        {:ok, %{rejected: true, message: message}} -> message
         {:ok, _payload} -> "Refresh queued"
         {:error, :unavailable} -> "Orchestrator unavailable"
       end
@@ -86,6 +88,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
+  end
+
+  @impl true
+  def handle_event("control", %{"action" => action} = params, socket) do
+    target = params["target"]
+
+    notice =
+      case Presenter.control_payload(orchestrator(), action, target) do
+        {:ok, payload} -> control_notice(payload)
+        {:error, :unavailable} -> "Orchestrator unavailable"
+      end
+
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+     |> assign(:now, DateTime.utc_now())
+     |> assign(:control_notice, notice)}
   end
 
   @impl true
@@ -243,6 +262,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </span>
               <span>Refresh</span>
             </button>
+            <button
+              type="button"
+              class="subtle-button"
+              phx-click="control"
+              phx-value-action={global_polling_action(@payload)}
+              data-confirm={global_polling_confirm(@payload)}
+              phx-disable-with="Working"
+              disabled={controls_disabled?(@payload)}
+            >
+              <%= global_polling_label(@payload) %>
+            </button>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live
@@ -253,6 +283,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </span>
             <%= if @refresh_notice do %>
               <span class="toolbar-notice" role="status"><%= @refresh_notice %></span>
+            <% end %>
+            <%= if @control_notice do %>
+              <span class="muted"><%= @control_notice %></span>
             <% end %>
           </div>
         </div>
@@ -665,6 +698,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% else %>
             <div class="table-wrap">
               <table class="data-table data-table-running">
+                <colgroup>
+                  <col style="width: 12rem;" />
+                  <col style="width: 10rem;" />
+                  <col style="width: 8rem;" />
+                  <col style="width: 7.5rem;" />
+                  <col style="width: 8.5rem;" />
+                  <col />
+                  <col style="width: 10rem;" />
+                  <col style="width: 16rem;" />
+                  <col style="width: 8rem;" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Issue</th>
@@ -676,6 +720,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Codex update</th>
                     <th>Tokens</th>
                     <th>Reply</th>
+                    <th>Controls</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -755,6 +800,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <% else %>
                         <span class="muted">n/a</span>
                       <% end %>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="subtle-button danger-button"
+                        phx-click="control"
+                        phx-value-action="cancel_run"
+                        phx-value-target={entry.issue_identifier}
+                        data-confirm={"Cancel active run for #{entry.issue_identifier}?"}
+                        phx-disable-with="Canceling"
+                        disabled={controls_disabled?(@payload)}
+                      >
+                        Stop
+                      </button>
                     </td>
                   </tr>
                 </tbody>
@@ -941,6 +1000,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <button type="button" class="subtle-button" phx-click="refresh_project" phx-value-project-id={project.id}>
                     Refresh
                   </button>
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="control"
+                    phx-value-action={project_polling_action(@payload, project)}
+                    phx-value-target={project_control_target(project)}
+                    data-confirm={project_polling_confirm(@payload, project)}
+                    phx-disable-with="Working"
+                    disabled={controls_disabled?(@payload)}
+                  >
+                    <%= project_polling_label(@payload, project) %>
+                  </button>
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="control"
+                    phx-value-action="dispatch_project_now"
+                    phx-value-target={project_control_target(project)}
+                    data-confirm={"Dispatch #{project.name || project.id} now?"}
+                    phx-disable-with="Queued"
+                    disabled={controls_disabled?(@payload) or global_polling_paused?(@payload) or project_paused?(@payload, project)}
+                  >
+                    Dispatch now
+                  </button>
                   <a href={dashboard_section_path(project.id, "tasks")} class="subtle-link">Tasks</a>
                   <a href={dashboard_section_path(project.id, "runs")} class="subtle-link">Runs</a>
                   <a href={dashboard_section_path(project.id, "settings")} class="subtle-link">Settings</a>
@@ -950,6 +1033,119 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
         </section>
+
+        <section id="retry-controls" class="ops-panel" aria-labelledby="retry-controls-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Retries</p>
+              <h2 id="retry-controls-title" class="section-title">Retry queue controls</h2>
+              <p class="section-copy">Backoff entries that can be retried now or cleared.</p>
+            </div>
+          </div>
+
+          <%= if @payload.retrying == [] do %>
+            <p class="empty-state">No issues are currently backing off.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 720px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Project</th>
+                    <th>Attempt</th>
+                    <th>Due at</th>
+                    <th>Error</th>
+                    <th>Controls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.retrying}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
+                    </td>
+                    <td><%= project_label(entry.project) %></td>
+                    <td><%= entry.attempt %></td>
+                    <td class="mono"><%= entry.due_at || "n/a" %></td>
+                    <td><%= entry.error || "n/a" %></td>
+                    <td>
+                      <div class="control-row">
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="control"
+                          phx-value-action="retry_now"
+                          phx-value-target={entry.issue_identifier}
+                          data-confirm={"Retry #{entry.issue_identifier} now?"}
+                          phx-disable-with="Queued"
+                          disabled={controls_disabled?(@payload) or global_polling_paused?(@payload)}
+                        >
+                          Retry now
+                        </button>
+                        <button
+                          type="button"
+                          class="subtle-button danger-button"
+                          phx-click="control"
+                          phx-value-action="clear_retry"
+                          phx-value-target={entry.issue_identifier}
+                          data-confirm={"Clear retry entry for #{entry.issue_identifier}?"}
+                          phx-disable-with="Clearing"
+                          disabled={controls_disabled?(@payload)}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <%= if @payload.claimed != [] do %>
+          <section id="claimed-controls" class="ops-panel" aria-labelledby="claimed-controls-title">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Claims</p>
+                <h2 id="claimed-controls-title" class="section-title">Claimed issues</h2>
+                <p class="section-copy">Claims with no active run or retry entry.</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 420px;">
+                <thead>
+                  <tr>
+                    <th>Issue ID</th>
+                    <th>Controls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.claimed}>
+                    <td class="mono"><%= entry.issue_id %></td>
+                    <td>
+                      <button
+                        type="button"
+                        class="subtle-button danger-button"
+                        phx-click="control"
+                        phx-value-action="release_claim"
+                        phx-value-target={entry.issue_id}
+                        data-confirm={"Release claim for #{entry.issue_id}?"}
+                        phx-disable-with="Releasing"
+                        disabled={controls_disabled?(@payload)}
+                      >
+                        Release
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <% end %>
 
         <section id="controls" class="ops-panel" aria-labelledby="controls-title">
           <div class="section-header">
@@ -1508,6 +1704,80 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp control_notice(%{ok: false, message: message, result_id: result_id}) do
+    "#{message} (#{result_id})"
+  end
+
+  defp control_notice(%{message: message, result_id: result_id}) do
+    "#{message} (#{result_id})"
+  end
+
+  defp control_notice(%{"ok" => false, "message" => message, "result_id" => result_id}) do
+    "#{message} (#{result_id})"
+  end
+
+  defp control_notice(%{"message" => message, "result_id" => result_id}) do
+    "#{message} (#{result_id})"
+  end
+
+  defp control_notice(_payload), do: "Control request finished"
+
+  defp controls_disabled?(%{error: _error}), do: true
+  defp controls_disabled?(_payload), do: false
+
+  defp global_polling_paused?(payload) do
+    payload
+    |> controls()
+    |> Map.get(:polling_paused, false)
+  end
+
+  defp global_polling_action(payload) do
+    if global_polling_paused?(payload), do: "resume_global", else: "pause_global"
+  end
+
+  defp global_polling_label(payload) do
+    if global_polling_paused?(payload), do: "Resume polling", else: "Pause polling"
+  end
+
+  defp global_polling_confirm(payload) do
+    if global_polling_paused?(payload), do: "Resume global polling?", else: "Pause global polling?"
+  end
+
+  defp project_paused?(payload, project) do
+    paused_projects =
+      payload
+      |> controls()
+      |> Map.get(:paused_projects, [])
+
+    project_control_target(project) in paused_projects
+  end
+
+  defp project_polling_action(payload, project) do
+    if project_paused?(payload, project), do: "resume_project", else: "pause_project"
+  end
+
+  defp project_polling_label(payload, project) do
+    if project_paused?(payload, project), do: "Resume", else: "Pause"
+  end
+
+  defp project_polling_confirm(payload, project) do
+    project_name = project.name || project.id
+
+    if project_paused?(payload, project) do
+      "Resume polling for #{project_name}?"
+    else
+      "Pause polling for #{project_name}?"
+    end
+  end
+
+  defp project_control_target(%{id: id}) when is_binary(id) and id != "", do: id
+  defp project_control_target(%{tracker_project_slug: slug}) when is_binary(slug) and slug != "", do: slug
+  defp project_control_target(%{name: name}) when is_binary(name) and name != "", do: name
+  defp project_control_target(_project), do: "default"
+
+  defp controls(%{controls: controls}) when is_map(controls), do: controls
+  defp controls(_payload), do: %{polling_paused: false, paused_projects: []}
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
