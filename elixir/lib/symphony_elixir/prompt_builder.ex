@@ -3,7 +3,7 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{AgentInstructions, Config, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
@@ -14,15 +14,31 @@ defmodule SymphonyElixir.PromptBuilder do
       |> prompt_template!()
       |> parse_template!()
 
-    template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
-    |> IO.iodata_to_binary()
+    rendered_prompt =
+      template
+      |> Solid.render!(
+        %{
+          "attempt" => Keyword.get(opts, :attempt),
+          "issue" => issue |> Map.from_struct() |> to_solid_map()
+        },
+        @render_opts
+      )
+      |> IO.iodata_to_binary()
+
+    case AgentInstructions.read(Keyword.get(opts, :workspace)) do
+      nil ->
+        rendered_prompt
+
+      {filename, instructions} ->
+        """
+        Project-local agent instructions from #{filename}:
+
+        #{instructions}
+
+        #{rendered_prompt}
+        """
+        |> String.trim_trailing()
+    end
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
