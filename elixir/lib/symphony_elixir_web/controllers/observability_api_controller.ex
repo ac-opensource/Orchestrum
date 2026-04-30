@@ -38,6 +38,22 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec project_refresh(Conn.t(), map()) :: Conn.t()
+  def project_refresh(conn, %{"project_id" => project_id}) do
+    case Presenter.project_refresh_payload(project_id, orchestrator()) do
+      {:ok, payload} ->
+        conn
+        |> put_status(202)
+        |> json(payload)
+
+      {:error, :project_not_found} ->
+        error_response(conn, 404, "project_not_found", "Project not found")
+
+      {:error, :unavailable} ->
+        error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")

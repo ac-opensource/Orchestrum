@@ -15,7 +15,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:selected_project_id, "all")
       |> assign(:refresh_notice, nil)
+      |> assign(:project_action_notice, nil)
+      |> assign(:project_action_error, nil)
       |> assign(:show_project_form, false)
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
@@ -27,6 +30,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, assign(socket, :selected_project_id, selected_project_id(params, socket.assigns.payload))}
   end
 
   @impl true
@@ -57,6 +65,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign(:payload, load_payload())
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
+  end
+
+  @impl true
+  def handle_event("filter_project", %{"project" => project_id}, socket) do
+    {:noreply, push_patch(socket, to: project_filter_path(project_id))}
+  end
+
+  @impl true
+  def handle_event("refresh_project", %{"project-id" => project_id}, socket) do
+    {notice, error} =
+      case Presenter.project_refresh_payload(project_id, orchestrator()) do
+        {:ok, %{coalesced: true, project: project}} ->
+          {"#{project.name || project.id} refresh already queued", nil}
+
+        {:ok, %{project: project}} ->
+          {"#{project.name || project.id} refresh queued", nil}
+
+        {:error, :project_not_found} ->
+          {nil, "Project not found"}
+
+        {:error, :unavailable} ->
+          {nil, "Orchestrator unavailable"}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:now, DateTime.utc_now())
+     |> assign(:project_action_notice, notice)
+     |> assign(:project_action_error, error)}
   end
 
   @impl true
@@ -183,19 +221,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="settings">
           <div class="section-header">
             <div>
               <h2 class="section-title">Projects</h2>
-              <p class="section-copy">Configured project, workspace, and repository context.</p>
+              <p class="section-copy">Command center, health, and scoped controls.</p>
             </div>
-            <button type="button" class="icon-button" phx-click="show_project_form" aria-label="Add project" title="Add project">
-              [+]
-            </button>
+            <div class="project-toolbar">
+              <form phx-change="filter_project" class="project-filter">
+                <label>
+                  <span>Project</span>
+                  <select name="project" aria-label="Filter project">
+                    <option value="all" selected={@selected_project_id == "all"}>All projects</option>
+                    <option :for={project <- @payload.projects} value={project.id} selected={@selected_project_id == project.id}>
+                      <%= project.name || project.id %>
+                    </option>
+                  </select>
+                </label>
+              </form>
+              <button type="button" class="icon-button" phx-click="show_project_form" aria-label="Add project" title="Add project">
+                [+]
+              </button>
+            </div>
           </div>
 
           <%= if @project_form_notice do %>
             <p class="form-notice"><%= @project_form_notice %></p>
+          <% end %>
+          <%= if @project_action_notice do %>
+            <p class="form-notice"><%= @project_action_notice %></p>
+          <% end %>
+          <%= if @project_action_error do %>
+            <p class="form-error"><%= @project_action_error %></p>
           <% end %>
 
           <%= if @show_project_form do %>
@@ -220,33 +277,93 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </form>
           <% end %>
 
-          <%= if @payload.projects == [] do %>
+          <%= if visible_projects(@payload.projects, @selected_project_id) == [] do %>
             <p class="empty-state">No configured projects.</p>
           <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
-                <thead>
-                  <tr>
-                    <th>Project</th>
-                    <th>Tracker</th>
-                    <th>Workspace root</th>
-                    <th>Repository</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={project <- @payload.projects}>
-                    <td><%= project.name || project.id %></td>
-                    <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
-                    <td class="mono"><%= project.workspace_root %></td>
-                    <td class="mono"><%= project.repository_path || "default hook" %></td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="project-command-grid">
+              <article :for={project <- visible_projects(@payload.projects, @selected_project_id)} class="project-command-card">
+                <div class="project-card-header">
+                  <div>
+                    <h3 class="project-title"><%= project.name || project.id %></h3>
+                    <p class="project-subtitle mono"><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></p>
+                  </div>
+                  <span class={health_badge_class(project.health.status)}><%= project.health.status %></span>
+                </div>
+
+                <dl class="project-detail-grid">
+                  <div>
+                    <dt>Workspace root</dt>
+                    <dd class="mono"><%= project.workspace_root %></dd>
+                  </div>
+                  <div>
+                    <dt>Repository</dt>
+                    <dd class="mono"><%= project.repository_path || "default hook" %></dd>
+                  </div>
+                  <div>
+                    <dt>Active states</dt>
+                    <dd><%= state_list(project.active_states) %></dd>
+                  </div>
+                  <div>
+                    <dt>Terminal states</dt>
+                    <dd><%= state_list(project.terminal_states) %></dd>
+                  </div>
+                  <div>
+                    <dt>Polling</dt>
+                    <dd><%= project.polling.status %> · next <%= format_polling(project.polling) %></dd>
+                  </div>
+                  <div>
+                    <dt>Last poll</dt>
+                    <dd><%= poll_result_label(project.polling.last_result) %></dd>
+                  </div>
+                  <div>
+                    <dt>Queue</dt>
+                    <dd class="numeric">
+                      <%= project.queue_counts.total %> total · <%= project.queue_counts.active_runs %> active · <%= project.queue_counts.retrying %> retrying
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Retry pressure</dt>
+                    <dd><%= project.retry_pressure.level %> · max attempt <%= project.retry_pressure.max_attempt %></dd>
+                  </div>
+                </dl>
+
+                <%= if project.health.problems != [] do %>
+                  <ul class="project-problem-list">
+                    <li :for={problem <- project.health.problems}>
+                      <strong><%= problem.code %></strong>: <%= problem.message %>
+                    </li>
+                  </ul>
+                <% end %>
+
+                <div class="project-failure-block">
+                  <p class="project-block-label">Recent failures</p>
+                  <%= if project.recent_failures == [] do %>
+                    <p class="muted">None</p>
+                  <% else %>
+                    <ul class="project-problem-list">
+                      <li :for={failure <- project.recent_failures}>
+                        <span class="issue-id"><%= failure.issue_identifier %></span>
+                        attempt <%= failure.attempt %>: <%= failure.error %>
+                      </li>
+                    </ul>
+                  <% end %>
+                </div>
+
+                <div class="project-card-actions">
+                  <button type="button" class="subtle-button" phx-click="refresh_project" phx-value-project-id={project.id}>
+                    Refresh
+                  </button>
+                  <a href={dashboard_section_path(project.id, "tasks")} class="subtle-link">Tasks</a>
+                  <a href={dashboard_section_path(project.id, "runs")} class="subtle-link">Runs</a>
+                  <a href={dashboard_section_path(project.id, "settings")} class="subtle-link">Settings</a>
+                  <a href={dashboard_section_path(project.id, "diagnostics")} class="subtle-link">Diagnostics</a>
+                </div>
+              </article>
             </div>
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="diagnostics">
           <div class="section-header">
             <div>
               <h2 class="section-title">Rate limits</h2>
@@ -257,7 +374,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="runs">
           <div class="section-header">
             <div>
               <h2 class="section-title">Running sessions</h2>
@@ -265,7 +382,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.running == [] do %>
+          <%= if visible_running(@payload, @selected_project_id) == [] do %>
             <p class="empty-state">No active sessions.</p>
           <% else %>
             <div class="table-wrap">
@@ -291,7 +408,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr :for={entry <- visible_running(@payload, @selected_project_id)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
@@ -349,7 +466,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="tasks">
           <div class="section-header">
             <div>
               <h2 class="section-title">Retry queue</h2>
@@ -357,7 +474,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.retrying == [] do %>
+          <%= if visible_retrying(@payload, @selected_project_id) == [] do %>
             <p class="empty-state">No issues are currently backing off.</p>
           <% else %>
             <div class="table-wrap">
@@ -372,7 +489,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.retrying}>
+                  <tr :for={entry <- visible_retrying(@payload, @selected_project_id)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
@@ -396,6 +513,101 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp selected_project_id(params, %{projects: projects}) when is_map(params) and is_list(projects) do
+    case Map.get(params, "project") do
+      project_id when project_id in [nil, "", "all"] ->
+        "all"
+
+      project_id ->
+        case find_project(projects, project_id) do
+          nil -> "all"
+          project -> project.id
+        end
+    end
+  end
+
+  defp selected_project_id(_params, _payload), do: "all"
+
+  defp visible_projects(projects, "all") when is_list(projects), do: projects
+
+  defp visible_projects(projects, project_id) when is_list(projects) do
+    projects
+    |> Enum.filter(&(find_project([&1], project_id) != nil))
+  end
+
+  defp visible_running(%{running: running}, "all"), do: running
+
+  defp visible_running(%{running: running, projects: projects}, project_id) do
+    visible_entries(running, projects, project_id)
+  end
+
+  defp visible_retrying(%{retrying: retrying}, "all"), do: retrying
+
+  defp visible_retrying(%{retrying: retrying, projects: projects}, project_id) do
+    visible_entries(retrying, projects, project_id)
+  end
+
+  defp visible_entries(entries, projects, project_id) do
+    case find_project(projects, project_id) do
+      nil -> entries
+      project -> Enum.filter(entries, &entry_for_project?(&1, project, projects))
+    end
+  end
+
+  defp entry_for_project?(%{project: nil}, project, [single_project]) do
+    normalize_key(project.id) == normalize_key(single_project.id)
+  end
+
+  defp entry_for_project?(%{project: entry_project}, project, _projects) when is_map(entry_project) do
+    entry_keys = entry_project_keys(entry_project)
+    project_keys = project_keys(project)
+    Enum.any?(entry_keys, &(&1 in project_keys))
+  end
+
+  defp entry_for_project?(_entry, _project, _projects), do: false
+
+  defp find_project(projects, project_id) when is_list(projects) do
+    normalized_project_id = normalize_key(project_id)
+
+    Enum.find(projects, fn project ->
+      normalized_project_id in project_keys(project)
+    end)
+  end
+
+  defp project_keys(project) when is_map(project) do
+    [project[:id], project["id"], project[:name], project["name"], project[:tracker_project_slug], project["tracker_project_slug"]]
+    |> Enum.map(&normalize_key/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp entry_project_keys(project) when is_map(project) do
+    [project[:id], project["id"], project[:name], project["name"], project[:slug], project["slug"]]
+    |> Enum.map(&normalize_key/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_key(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_key(_value), do: nil
+
+  defp project_filter_path(project_id) when project_id in [nil, "", "all"], do: "/"
+
+  defp project_filter_path(project_id) do
+    "/?" <> URI.encode_query(%{"project" => project_id})
+  end
+
+  defp dashboard_section_path(project_id, section) do
+    project_filter_path(project_id) <> "##{section}"
   end
 
   defp orchestrator do
@@ -443,6 +655,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
+
+  defp state_list(states) when is_list(states), do: Enum.join(states, ", ")
+  defp state_list(_states), do: "n/a"
+
+  defp poll_result_label(%{status: status, message: message}) when is_binary(status) and is_binary(message) do
+    "#{status}: #{message}"
+  end
+
+  defp poll_result_label(_result), do: "n/a"
+
+  defp health_badge_class("healthy"), do: "state-badge state-badge-active"
+  defp health_badge_class("error"), do: "state-badge state-badge-danger"
+  defp health_badge_class(_status), do: "state-badge state-badge-warning"
 
   defp default_project_form, do: %{"name" => "", "project_slug" => ""}
 

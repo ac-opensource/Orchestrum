@@ -40,7 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      last_poll_result: nil
     ]
   end
 
@@ -235,48 +236,77 @@ defmodule SymphonyElixir.Orchestrator do
     with :ok <- Config.validate!(),
          {:ok, issues} <- safe_fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+      before_running_count = map_size(state.running)
+      dispatched_state = choose_issues(issues, state)
+
+      put_last_poll_result(dispatched_state, "ok", "Fetched #{length(issues)} candidate issue(s).", %{
+        candidate_count: length(issues),
+        dispatched_count: max(map_size(dispatched_state.running) - before_running_count, 0)
+      })
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
-        state
+
+        put_last_poll_result(state, "error", "Linear API token missing in WORKFLOW.md.", %{
+          code: "missing_auth"
+        })
 
       {:error, :missing_linear_project_slug} ->
         Logger.error("Linear project slug missing in WORKFLOW.md")
-        state
+
+        put_last_poll_result(state, "error", "Linear project slug missing in WORKFLOW.md.", %{
+          code: "missing_project_slug"
+        })
 
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
-        state
+        put_last_poll_result(state, "error", "Tracker kind missing in WORKFLOW.md.", %{code: "missing_tracker_kind"})
 
       {:error, {:unsupported_tracker_kind, kind}} ->
         Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
 
-        state
+        put_last_poll_result(state, "error", "Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}.", %{
+          code: "unsupported_tracker_kind"
+        })
 
       {:error, {:invalid_workflow_config, message}} ->
         Logger.error("Invalid WORKFLOW.md config: #{message}")
-        state
+
+        put_last_poll_result(state, "error", "Invalid WORKFLOW.md config: #{message}", %{
+          code: "invalid_workflow_config"
+        })
 
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        state
+
+        put_last_poll_result(state, "error", "Missing WORKFLOW.md at #{path}: #{inspect(reason)}.", %{
+          code: "missing_workflow_file"
+        })
 
       {:error, :workflow_front_matter_not_a_map} ->
         Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
+
+        put_last_poll_result(state, "error", "Failed to parse WORKFLOW.md: front matter must decode to a map.", %{
+          code: "workflow_front_matter_not_a_map"
+        })
 
       {:error, {:workflow_parse_error, reason}} ->
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        state
+
+        put_last_poll_result(state, "error", "Failed to parse WORKFLOW.md: #{inspect(reason)}.", %{
+          code: "workflow_parse_error"
+        })
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
+
+        put_last_poll_result(state, "error", "Failed to fetch from Linear: #{inspect(reason)}.", %{
+          code: "poll_fetch_failed"
+        })
 
       false ->
-        state
+        put_last_poll_result(state, "skipped", "No available orchestrator slots.", %{code: "no_available_slots"})
     end
   end
 
@@ -1265,6 +1295,7 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       last_poll_result: state.last_poll_result,
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1286,6 +1317,18 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp put_last_poll_result(%State{} = state, status, message, details) do
+    %{
+      state
+      | last_poll_result: %{
+          status: status,
+          message: message,
+          details: details,
+          checked_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+    }
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do

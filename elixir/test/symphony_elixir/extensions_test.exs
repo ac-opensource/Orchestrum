@@ -358,7 +358,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     state_payload = json_response(conn, 200)
 
     assert state_payload["counts"] == %{"running" => 1, "retrying" => 1}
-    assert [%{"tracker_project_slug" => "project"}] = state_payload["projects"]
+
+    assert [
+             %{
+               "tracker_project_slug" => "project",
+               "health" => %{"status" => "healthy", "problems" => []},
+               "queue_counts" => %{"active_runs" => 1, "retrying" => 1, "total" => 2},
+               "retry_pressure" => %{"level" => "elevated", "max_attempt" => 2, "retrying" => 1},
+               "recent_failures" => [%{"issue_identifier" => "MT-RETRY", "error" => "boom"}]
+             }
+           ] = state_payload["projects"]
+
     assert state_payload["polling"] == %{"checking?" => false, "next_poll_in_ms" => 25_000, "poll_interval_ms" => 30_000}
 
     assert [
@@ -447,6 +457,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    conn = post(build_conn(), "/api/v1/projects/project/refresh", %{})
+
+    assert %{
+             "queued" => true,
+             "operations" => ["poll", "reconcile"],
+             "project" => %{"tracker_project_slug" => "project"}
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -695,6 +713,42 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project", "wallet-android"]
   end
 
+  test "dashboard liveview filters project slices and exposes project navigation" do
+    write_multi_project_workflow!()
+    orchestrator_name = Module.concat(__MODULE__, :DashboardProjectFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: project_slice_snapshot(),
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll", "reconcile"]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/?project=beta")
+    assert html =~ "Beta Project"
+    assert html =~ "MT-BETA"
+    assert html =~ "MT-BETA-RETRY"
+    refute html =~ "MT-ALPHA"
+    assert html =~ ~s(href="/?project=beta#tasks")
+    assert html =~ ~s(href="/?project=beta#runs")
+    assert html =~ ~s(href="/?project=beta#settings")
+    assert html =~ ~s(href="/?project=beta#diagnostics")
+
+    html =
+      view
+      |> element("button[phx-value-project-id=\"beta\"]", "Refresh")
+      |> render_click()
+
+    assert html =~ "Beta Project refresh queued"
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -814,6 +868,86 @@ defmodule SymphonyElixir.ExtensionsTest do
       rate_limits: %{"primary" => %{"remaining" => 11}},
       polling: %{checking?: false, next_poll_in_ms: 25_000, poll_interval_ms: 30_000}
     }
+  end
+
+  defp project_slice_snapshot do
+    %{
+      running: [
+        %{
+          issue_id: "issue-alpha",
+          identifier: "MT-ALPHA",
+          state: "In Progress",
+          project: %{id: "linear-alpha", name: "Alpha Project", slug: "alpha"},
+          session_id: "thread-alpha",
+          turn_count: 1,
+          codex_app_server_pid: nil,
+          last_codex_message: "alpha running",
+          last_codex_timestamp: nil,
+          last_codex_event: :notification,
+          codex_input_tokens: 1,
+          codex_output_tokens: 2,
+          codex_total_tokens: 3,
+          started_at: DateTime.utc_now()
+        },
+        %{
+          issue_id: "issue-beta",
+          identifier: "MT-BETA",
+          state: "In Progress",
+          project: %{id: "linear-beta", name: "Beta Project", slug: "beta"},
+          session_id: "thread-beta",
+          turn_count: 2,
+          codex_app_server_pid: nil,
+          last_codex_message: "beta running",
+          last_codex_timestamp: nil,
+          last_codex_event: :notification,
+          codex_input_tokens: 5,
+          codex_output_tokens: 8,
+          codex_total_tokens: 13,
+          started_at: DateTime.utc_now()
+        }
+      ],
+      retrying: [
+        %{
+          issue_id: "issue-beta-retry",
+          identifier: "MT-BETA-RETRY",
+          attempt: 3,
+          due_in_ms: 2_000,
+          error: "repository_clone_failed",
+          project: %{id: "linear-beta", name: "Beta Project", slug: "beta"}
+        }
+      ],
+      codex_totals: %{input_tokens: 6, output_tokens: 10, total_tokens: 16, seconds_running: 30},
+      rate_limits: %{},
+      last_poll_result: %{status: "ok", message: "Fetched 3 candidate issue(s).", checked_at: "2026-04-30T00:00:00Z"},
+      polling: %{checking?: false, next_poll_in_ms: 10_000, poll_interval_ms: 30_000}
+    }
+  end
+
+  defp write_multi_project_workflow! do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: linear
+      api_key: "token"
+      project_slug: "alpha"
+      active_states: ["Todo", "In Progress"]
+      terminal_states: ["Done"]
+    workspace:
+      root: "#{System.tmp_dir!()}"
+    projects:
+      - id: "alpha"
+        name: "Alpha Project"
+        tracker:
+          project_slug: "alpha"
+      - id: "beta"
+        name: "Beta Project"
+        tracker:
+          project_slug: "beta"
+    ---
+    Prompt
+    """)
+
+    assert :ok = WorkflowStore.force_reload()
   end
 
   defp wait_for_bound_port do
