@@ -167,7 +167,9 @@ codex:
 - `server.enabled: true` starts the optional Phoenix LiveView dashboard and JSON API using
   `server.port` or port `4000` when no port is set. CLI `--port` overrides workflow server config.
 - `observability.snapshot_timeout_ms` controls dashboard/API snapshot calls.
-- The dashboard/API are available at `/`, `/api/v1/state`, `/api/v1/task-board`,
+- The dashboard/API are available at `/`, dashboard surface routes such as `/tasks`, `/runs`,
+  `/projects`, `/controls`, `/settings`, and `/diagnostics`, run detail routes such as
+  `/runs/<issue_identifier>`, plus `/api/v1/state`, `/api/v1/task-board`,
   `/api/v1/<issue_identifier>`, `/api/v1/refresh`, and `/api/v1/control/<control_action>`.
   Task-board responses include configured project metadata, tracker issue fields, applied
   filters, limit/offset pagination, and running/retry overlay state. Control responses use explicit
@@ -176,9 +178,10 @@ codex:
 
 ## Web dashboard
 
-The observability UI now runs on a minimal Phoenix stack:
+The operational dashboard runs on a minimal Phoenix stack:
 
-- LiveView for the dashboard at `/`
+- LiveView for the dashboard shell at `/` with deep-linkable operator surfaces for Overview, Tasks,
+  Runs, Projects, Controls, Settings, and Diagnostics
 - JSON API for operational debugging under `/api/v1/*`
 - Project/workspace/repository inventory, dashboard project creation, MCP server status visibility,
   next-poll visibility, a manual refresh action, and tracker-backed replies for tickets needing

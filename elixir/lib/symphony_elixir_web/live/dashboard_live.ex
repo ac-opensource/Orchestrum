@@ -8,6 +8,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, ProjectRegistry, Tracker}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @dashboard_views [
+    %{id: "overview", label: "Overview", path: "/"},
+    %{id: "tasks", label: "Tasks", path: "/tasks"},
+    %{id: "runs", label: "Runs", path: "/runs"},
+    %{id: "projects", label: "Projects", path: "/projects"},
+    %{id: "controls", label: "Controls", path: "/controls"},
+    %{id: "settings", label: "Settings", path: "/settings"},
+    %{id: "diagnostics", label: "Diagnostics", path: "/diagnostics"}
+  ]
+  @view_ids Enum.map(@dashboard_views, & &1.id)
 
   @impl true
   def mount(params, _session, socket) do
@@ -22,8 +32,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:event_query, "")
       |> assign(:payload, payload)
       |> assign(:now, DateTime.utc_now())
+      |> assign(:current_view, "overview")
+      |> assign(:selected_project_id, "all")
       |> assign(:refresh_notice, nil)
       |> assign(:task_filter, "all")
+      |> assign(:project_action_notice, nil)
+      |> assign(:project_action_error, nil)
       |> assign(:show_project_form, false)
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
@@ -51,6 +65,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:selected_issue_identifier, selected_issue_identifier)
+     |> assign(:current_view, view_from_params(params, socket.assigns.live_action))
+     |> assign(:selected_project_id, selected_project_id(params, socket.assigns.payload))
      |> assign(:task_board_filters, task_board_filters)
      |> assign(:selected_task_issue_identifier, selected_task_issue_identifier)
      |> assign_payload()}
@@ -84,6 +100,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign_payload()
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
+  end
+
+  @impl true
+  def handle_event("filter_project", %{"project" => project_id}, socket) do
+    {:noreply, push_patch(socket, to: project_filter_path(project_id))}
+  end
+
+  @impl true
+  def handle_event("refresh_project", %{"project-id" => project_id}, socket) do
+    {notice, error} =
+      case Presenter.project_refresh_payload(project_id, orchestrator()) do
+        {:ok, %{coalesced: true, project: project}} ->
+          {"#{project.name || project.id} refresh already queued", nil}
+
+        {:ok, %{project: project}} ->
+          {"#{project.name || project.id} refresh queued", nil}
+
+        {:error, :project_not_found} ->
+          {nil, "Project not found"}
+
+        {:error, :unavailable} ->
+          {nil, "Orchestrator unavailable"}
+      end
+
+    {:noreply,
+     socket
+     |> assign_payload()
+     |> assign(:now, DateTime.utc_now())
+     |> assign(:project_action_notice, notice)
+     |> assign(:project_action_error, error)}
   end
 
   @impl true
@@ -247,25 +293,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </header>
 
       <nav class="section-nav" aria-label="Dashboard sections">
-        <a class="section-nav-link" href="#overview">
-          <span>Overview</span>
-          <span class="nav-count numeric"><%= task_count(@payload) %></span>
-        </a>
-        <a class="section-nav-link" href="#tasks">
-          <span>Tasks</span>
-          <span class="nav-count numeric"><%= task_board_count(@payload) %></span>
-        </a>
-        <a class="section-nav-link" href="#runs">
-          <span>Runs</span>
-          <span class="nav-count numeric"><%= running_count(@payload) %></span>
-        </a>
-        <a class="section-nav-link" href="#projects">
-          <span>Projects</span>
-          <span class="nav-count numeric"><%= project_count(@payload) %></span>
-        </a>
-        <a class="section-nav-link" href="#controls">Controls</a>
-        <a class="section-nav-link" href="#settings">Settings</a>
-        <a class="section-nav-link" href="#diagnostics">Diagnostics</a>
+        <%= for item <- dashboard_views() do %>
+          <.link
+            patch={item.path}
+            class={nav_link_class(item.id, @current_view)}
+            aria-current={if item.id == @current_view, do: "page", else: nil}
+            data-dashboard-view={item.id}
+          >
+            <span><%= item.label %></span>
+            <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
+              <span class="nav-count numeric"><%= count %></span>
+            <% end %>
+          </.link>
+        <% end %>
       </nav>
 
       <%= if @payload[:error] do %>
@@ -687,7 +727,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 phx-value-filter="all"
                 aria-pressed={to_string(@task_filter == "all")}
               >
-                All <span class="numeric"><%= task_count(@payload) %></span>
+                All <span class="numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
               </button>
               <button
                 type="button"
@@ -696,7 +736,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 phx-value-filter="running"
                 aria-pressed={to_string(@task_filter == "running")}
               >
-                Running <span class="numeric"><%= running_count(@payload) %></span>
+                Running <span class="numeric"><%= visible_running_count(@payload, @selected_project_id) %></span>
               </button>
               <button
                 type="button"
@@ -705,12 +745,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 phx-value-filter="retrying"
                 aria-pressed={to_string(@task_filter == "retrying")}
               >
-                Retrying <span class="numeric"><%= retrying_count(@payload) %></span>
+                Retrying <span class="numeric"><%= visible_retrying_count(@payload, @selected_project_id) %></span>
               </button>
             </div>
           </div>
 
-          <%= if task_filter_empty?(@payload, @task_filter) do %>
+          <%= if task_filter_empty?(@payload, @task_filter, @selected_project_id) do %>
             <p class="empty-state">No <%= task_filter_empty_label(@task_filter) %> tasks.</p>
           <% else %>
             <div class="table-wrap">
@@ -727,7 +767,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </thead>
                 <tbody>
                   <%= if @task_filter in ["all", "running"] do %>
-                    <tr :for={entry <- @payload.running}>
+                    <tr :for={entry <- visible_running(@payload, @selected_project_id)}>
                       <td>
                         <div class="issue-stack">
                           <span class="issue-id"><%= entry.issue_identifier %></span>
@@ -752,7 +792,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <% end %>
 
                   <%= if @task_filter in ["all", "retrying"] do %>
-                    <tr :for={entry <- @payload.retrying}>
+                    <tr :for={entry <- visible_retrying(@payload, @selected_project_id)}>
                       <td>
                         <div class="issue-stack">
                           <span class="issue-id"><%= entry.issue_identifier %></span>
@@ -847,7 +887,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.running == [] do %>
+          <%= if visible_running(@payload, @selected_project_id) == [] do %>
             <p class="empty-state">No active sessions.</p>
           <% else %>
             <div class="table-wrap">
@@ -866,7 +906,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr :for={entry <- visible_running(@payload, @selected_project_id)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
@@ -955,21 +995,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div>
               <p class="section-kicker">Projects</p>
               <h2 id="projects-title" class="section-title">Project command center</h2>
-              <p class="section-copy">Configured project, workspace, and repository context.</p>
+              <p class="section-copy">Command center, health, and scoped controls.</p>
             </div>
-            <button
-              type="button"
-              class="icon-button"
-              phx-click="show_project_form"
-              aria-label="Add project"
-              title="Add project"
-            >
-              <span aria-hidden="true">+</span>
-            </button>
+            <div class="project-toolbar">
+              <form phx-change="filter_project" class="project-filter">
+                <label>
+                  <span>Project</span>
+                  <select name="project" aria-label="Filter project">
+                    <option value="all" selected={@selected_project_id == "all"}>All projects</option>
+                    <option :for={project <- @payload.projects} value={project.id} selected={@selected_project_id == project.id}>
+                      <%= project.name || project.id %>
+                    </option>
+                  </select>
+                </label>
+              </form>
+              <button
+                type="button"
+                class="icon-button"
+                phx-click="show_project_form"
+                aria-label="Add project"
+                title="Add project"
+              >
+                <span aria-hidden="true">+</span>
+              </button>
+            </div>
           </div>
 
           <%= if @project_form_notice do %>
             <p class="form-notice" role="status"><%= @project_form_notice %></p>
+          <% end %>
+          <%= if @project_action_notice do %>
+            <p class="form-notice" role="status"><%= @project_action_notice %></p>
+          <% end %>
+          <%= if @project_action_error do %>
+            <p class="form-error" role="alert"><%= @project_action_error %></p>
           <% end %>
 
           <%= if @show_project_form do %>
@@ -1021,36 +1080,100 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </form>
           <% end %>
 
-          <%= if @payload.projects == [] do %>
+          <%= if visible_projects(@payload.projects, @selected_project_id) == [] do %>
             <p class="empty-state">No configured projects.</p>
           <% else %>
-            <div class="table-wrap">
-              <table class="data-table project-settings-table">
-                <thead>
-                  <tr>
-                    <th>Project</th>
-                    <th>Tracker</th>
-                    <th>Local directory</th>
-                    <th>Remote repository</th>
-                    <th>Git identity</th>
-                    <th>Agent instructions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={project <- @payload.projects}>
-                    <td><%= project.name || project.id %></td>
-                    <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
-                    <td class="mono path-text"><%= project.workspace_root %></td>
-                    <td class="mono path-text"><%= project.repository_path || "default hook" %></td>
-                    <td>
+            <div class="project-command-grid">
+              <article :for={project <- visible_projects(@payload.projects, @selected_project_id)} class="project-command-card">
+                <div class="project-card-header">
+                  <div>
+                    <h3 class="project-title"><%= project.name || project.id %></h3>
+                    <p class="project-subtitle mono"><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></p>
+                  </div>
+                  <span class={health_badge_class(project.health.status)}><%= project.health.status %></span>
+                </div>
+
+                <dl class="project-detail-grid">
+                  <div>
+                    <dt>Workspace root</dt>
+                    <dd class="mono path-text"><%= project.workspace_root %></dd>
+                  </div>
+                  <div>
+                    <dt>Repository</dt>
+                    <dd class="mono path-text"><%= project.repository_path || "default hook" %></dd>
+                  </div>
+                  <div>
+                    <dt>Active states</dt>
+                    <dd><%= state_list(project.active_states) %></dd>
+                  </div>
+                  <div>
+                    <dt>Terminal states</dt>
+                    <dd><%= state_list(project.terminal_states) %></dd>
+                  </div>
+                  <div>
+                    <dt>Git identity</dt>
+                    <dd>
                       <div class="detail-stack">
                         <span :for={line <- git_identity_lines(project)} class="mono"><%= line %></span>
                       </div>
-                    </td>
-                    <td><%= agent_instruction_status(project) %></td>
-                  </tr>
-                </tbody>
-              </table>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Agent instructions</dt>
+                    <dd><%= agent_instruction_status(project) %></dd>
+                  </div>
+                  <div>
+                    <dt>Polling</dt>
+                    <dd><%= project.polling.status %> · next <%= format_polling(project.polling) %></dd>
+                  </div>
+                  <div>
+                    <dt>Last poll</dt>
+                    <dd><%= poll_result_label(project.polling.last_result) %></dd>
+                  </div>
+                  <div>
+                    <dt>Queue</dt>
+                    <dd class="numeric">
+                      <%= project.queue_counts.total %> total · <%= project.queue_counts.active_runs %> active · <%= project.queue_counts.retrying %> retrying
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Retry pressure</dt>
+                    <dd><%= project.retry_pressure.level %> · max attempt <%= project.retry_pressure.max_attempt %></dd>
+                  </div>
+                </dl>
+
+                <%= if project.health.problems != [] do %>
+                  <ul class="project-problem-list">
+                    <li :for={problem <- project.health.problems}>
+                      <strong><%= problem.code %></strong>: <%= problem.message %>
+                    </li>
+                  </ul>
+                <% end %>
+
+                <div class="project-failure-block">
+                  <p class="project-block-label">Recent failures</p>
+                  <%= if project.recent_failures == [] do %>
+                    <p class="muted">None</p>
+                  <% else %>
+                    <ul class="project-problem-list">
+                      <li :for={failure <- project.recent_failures}>
+                        <span class="issue-id"><%= failure.issue_identifier %></span>
+                        attempt <%= failure.attempt %>: <%= failure.error %>
+                      </li>
+                    </ul>
+                  <% end %>
+                </div>
+
+                <div class="project-card-actions">
+                  <button type="button" class="subtle-button" phx-click="refresh_project" phx-value-project-id={project.id}>
+                    Refresh
+                  </button>
+                  <a href={dashboard_section_path(project.id, "tasks")} class="subtle-link">Tasks</a>
+                  <a href={dashboard_section_path(project.id, "runs")} class="subtle-link">Runs</a>
+                  <a href={dashboard_section_path(project.id, "settings")} class="subtle-link">Settings</a>
+                  <a href={dashboard_section_path(project.id, "diagnostics")} class="subtle-link">Diagnostics</a>
+                </div>
+              </article>
             </div>
           <% end %>
         </section>
@@ -1185,6 +1308,134 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> assign(:selected_task_issue, select_task_issue(payload, selected_task_issue_identifier))
   end
 
+  defp selected_project_id(params, %{projects: projects}) when is_map(params) and is_list(projects) do
+    case Map.get(params, "project") do
+      project_id when project_id in [nil, "", "all"] ->
+        "all"
+
+      project_id ->
+        case find_project(projects, project_id) do
+          nil -> "all"
+          project -> project.id
+        end
+    end
+  end
+
+  defp selected_project_id(_params, _payload), do: "all"
+
+  defp dashboard_views, do: @dashboard_views
+
+  defp view_from_params(%{"view" => view}, _action) when view in @view_ids, do: view
+  defp view_from_params(_params, action), do: view_from_action(action)
+
+  defp view_from_action(:show), do: "runs"
+
+  defp view_from_action(action)
+       when action in [:overview, :tasks, :runs, :projects, :controls, :settings, :diagnostics],
+       do: Atom.to_string(action)
+
+  defp view_from_action(_action), do: "overview"
+
+  defp nav_link_class(view, view), do: "section-nav-link section-nav-link-active"
+  defp nav_link_class(_view, _current_view), do: "section-nav-link"
+
+  defp dashboard_nav_count("overview", payload, project_id),
+    do: visible_task_count(payload, project_id)
+
+  defp dashboard_nav_count("tasks", payload, _project_id), do: task_board_count(payload)
+  defp dashboard_nav_count("runs", payload, project_id), do: visible_running_count(payload, project_id)
+  defp dashboard_nav_count("projects", payload, project_id), do: visible_project_count(payload, project_id)
+  defp dashboard_nav_count(_view, _payload, _project_id), do: nil
+
+  defp visible_projects(projects, "all") when is_list(projects), do: projects
+
+  defp visible_projects(projects, project_id) when is_list(projects) do
+    projects
+    |> Enum.filter(&(find_project([&1], project_id) != nil))
+  end
+
+  defp visible_projects(_projects, _project_id), do: []
+
+  defp visible_running(%{running: running}, "all") when is_list(running), do: running
+
+  defp visible_running(%{running: running, projects: projects}, project_id) when is_list(running) and is_list(projects) do
+    visible_entries(running, projects, project_id)
+  end
+
+  defp visible_running(_payload, _project_id), do: []
+
+  defp visible_retrying(%{retrying: retrying}, "all") when is_list(retrying), do: retrying
+
+  defp visible_retrying(%{retrying: retrying, projects: projects}, project_id) when is_list(retrying) and is_list(projects) do
+    visible_entries(retrying, projects, project_id)
+  end
+
+  defp visible_retrying(_payload, _project_id), do: []
+
+  defp visible_entries(entries, projects, project_id) when is_list(entries) and is_list(projects) do
+    case find_project(projects, project_id) do
+      nil -> entries
+      project -> Enum.filter(entries, &entry_for_project?(&1, project, projects))
+    end
+  end
+
+  defp visible_entries(_entries, _projects, _project_id), do: []
+
+  defp entry_for_project?(%{project: nil}, project, [single_project]) do
+    normalize_key(project.id) == normalize_key(single_project.id)
+  end
+
+  defp entry_for_project?(%{project: entry_project}, project, _projects) when is_map(entry_project) do
+    entry_keys = entry_project_keys(entry_project)
+    project_keys = project_keys(project)
+    Enum.any?(entry_keys, &(&1 in project_keys))
+  end
+
+  defp entry_for_project?(_entry, _project, _projects), do: false
+
+  defp find_project(projects, project_id) when is_list(projects) do
+    normalized_project_id = normalize_key(project_id)
+
+    Enum.find(projects, fn project ->
+      normalized_project_id in project_keys(project)
+    end)
+  end
+
+  defp project_keys(project) when is_map(project) do
+    [project[:id], project["id"], project[:name], project["name"], project[:tracker_project_slug], project["tracker_project_slug"]]
+    |> Enum.map(&normalize_key/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp entry_project_keys(project) when is_map(project) do
+    [project[:id], project["id"], project[:name], project["name"], project[:slug], project["slug"]]
+    |> Enum.map(&normalize_key/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_key(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_key(_value), do: nil
+
+  defp project_filter_path(project_id), do: dashboard_project_path("/", project_id)
+
+  defp dashboard_section_path(project_id, section), do: dashboard_project_path(dashboard_view_path(section), project_id)
+
+  defp dashboard_project_path(path, project_id) when project_id in [nil, "", "all"], do: path
+  defp dashboard_project_path(path, project_id), do: path <> "?" <> URI.encode_query(%{"project" => project_id})
+
+  defp dashboard_view_path("overview"), do: "/"
+  defp dashboard_view_path(section) when section in @view_ids, do: "/" <> section
+  defp dashboard_view_path(_section), do: "/"
+
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
   end
@@ -1196,17 +1447,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp task_board_count(%{task_board: %{filtered_count: count}}) when is_integer(count), do: count
   defp task_board_count(_payload), do: 0
 
-  defp task_count(%{running: running, retrying: retrying}), do: length(running) + length(retrying)
-  defp task_count(_payload), do: 0
+  defp visible_task_count(payload, project_id),
+    do: visible_running_count(payload, project_id) + visible_retrying_count(payload, project_id)
 
-  defp running_count(%{running: running}), do: length(running)
-  defp running_count(_payload), do: 0
+  defp visible_running_count(payload, project_id), do: payload |> visible_running(project_id) |> length()
+  defp visible_retrying_count(payload, project_id), do: payload |> visible_retrying(project_id) |> length()
 
-  defp retrying_count(%{retrying: retrying}), do: length(retrying)
-  defp retrying_count(_payload), do: 0
-
-  defp project_count(%{projects: projects}), do: length(projects)
-  defp project_count(_payload), do: 0
+  defp visible_project_count(%{projects: projects}, project_id), do: projects |> visible_projects(project_id) |> length()
+  defp visible_project_count(_payload, _project_id), do: 0
 
   defp task_filter_button_class(current, target) do
     if current == target do
@@ -1216,9 +1464,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp task_filter_empty?(payload, "running"), do: running_count(payload) == 0
-  defp task_filter_empty?(payload, "retrying"), do: retrying_count(payload) == 0
-  defp task_filter_empty?(payload, _filter), do: task_count(payload) == 0
+  defp task_filter_empty?(payload, "running", project_id), do: visible_running_count(payload, project_id) == 0
+  defp task_filter_empty?(payload, "retrying", project_id), do: visible_retrying_count(payload, project_id) == 0
+  defp task_filter_empty?(payload, _filter, project_id), do: visible_task_count(payload, project_id) == 0
 
   defp task_filter_empty_label("running"), do: "running"
   defp task_filter_empty_label("retrying"), do: "retrying"
@@ -1366,7 +1614,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> URI.encode_query()
     |> case do
       "" -> "/"
-      query -> "/?" <> query
+      query -> "/tasks?" <> query
     end
   end
 
@@ -1378,6 +1626,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp maybe_put_issue_param(params, _selected_identifier), do: params
+
+  defp state_list(states) when is_list(states), do: Enum.join(states, ", ")
+  defp state_list(_states), do: "n/a"
+
+  defp poll_result_label(%{status: status, message: message}) when is_binary(status) and is_binary(message) do
+    "#{status}: #{message}"
+  end
+
+  defp poll_result_label(_result), do: "n/a"
+
+  defp health_badge_class("healthy"), do: "state-badge state-badge-active"
+  defp health_badge_class("error"), do: "state-badge state-badge-danger"
+  defp health_badge_class(_status), do: "state-badge state-badge-warning"
 
   defp mcp_action_label("re_auth"), do: "Re-auth"
   defp mcp_action_label("re_config"), do: "Re-config"
