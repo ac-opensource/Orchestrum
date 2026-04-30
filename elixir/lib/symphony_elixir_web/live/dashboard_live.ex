@@ -9,13 +9,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @dashboard_views [
-    %{id: "overview", label: "Overview", path: "/"},
-    %{id: "tasks", label: "Tasks", path: "/tasks"},
-    %{id: "runs", label: "Runs", path: "/runs"},
-    %{id: "projects", label: "Projects", path: "/projects"},
-    %{id: "controls", label: "Controls", path: "/controls"},
-    %{id: "settings", label: "Settings", path: "/settings"},
-    %{id: "diagnostics", label: "Diagnostics", path: "/diagnostics"}
+    %{id: "overview", label: "Command Center", path: "/", icon: "CC"},
+    %{id: "tasks", label: "Task Manager", path: "/tasks", icon: "TM"},
+    %{id: "runs", label: "Run Monitor", path: "/runs", icon: "RN"},
+    %{id: "projects", label: "Agent Config", path: "/projects", icon: "AG"},
+    %{id: "controls", label: "Workflow Builder", path: "/controls", icon: "WF"},
+    %{id: "settings", label: "System Settings", path: "/settings", icon: "ST"},
+    %{id: "diagnostics", label: "Audit Logs", path: "/diagnostics", icon: "LG"}
   ]
   @view_ids Enum.map(@dashboard_views, & &1.id)
 
@@ -264,12 +264,47 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell" aria-labelledby="dashboard-title">
+      <aside class="command-rail" aria-label="Orchestrum command navigation">
+        <div class="brand-lockup">
+          <p class="brand-title">Orchestrum</p>
+          <p class="brand-subtitle">AI Orchestration</p>
+        </div>
+
+        <nav class="section-nav" aria-label="Dashboard sections">
+          <%= for item <- dashboard_primary_views() do %>
+            <.link
+              patch={dashboard_project_path(item.path, @selected_project_id)}
+              class={nav_link_class(item.id, @current_view)}
+              aria-current={if item.id == @current_view, do: "page", else: nil}
+              data-dashboard-view={item.id}
+            >
+              <span class="nav-icon" aria-hidden="true"><%= item.icon %></span>
+              <span><%= item.label %></span>
+              <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
+                <span class="nav-count numeric"><%= count %></span>
+              <% end %>
+            </.link>
+          <% end %>
+        </nav>
+
+        <div class="rail-footer" aria-label="Support links">
+          <.link
+            patch={dashboard_project_path(dashboard_view_path("settings"), @selected_project_id)}
+            data-dashboard-view="settings"
+            aria-current={if @current_view == "settings", do: "page", else: nil}
+          >
+            System Settings
+          </.link>
+          <a href="/api/v1/state">State API</a>
+        </div>
+      </aside>
+
       <header class="dashboard-header">
         <div class="dashboard-header-main">
           <div>
-            <p class="eyebrow">Orchestrum Observability</p>
+            <p class="eyebrow">System Monitor</p>
             <h1 id="dashboard-title" class="dashboard-title">
-              Operations Dashboard
+              Operations Command Center
             </h1>
             <p class="dashboard-copy">
               Current state, queue pressure, token usage, and operational controls for this local runtime.
@@ -324,22 +359,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
-
-      <nav class="section-nav" aria-label="Dashboard sections">
-        <%= for item <- dashboard_views() do %>
-          <.link
-            patch={item.path}
-            class={nav_link_class(item.id, @current_view)}
-            aria-current={if item.id == @current_view, do: "page", else: nil}
-            data-dashboard-view={item.id}
-          >
-            <span><%= item.label %></span>
-            <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
-              <span class="nav-count numeric"><%= count %></span>
-            <% end %>
-          </.link>
-        <% end %>
-      </nav>
 
       <%= if @payload[:error] do %>
         <section id="diagnostics" class="ops-panel error-panel" aria-labelledby="diagnostics-title" role="alert">
@@ -1519,7 +1538,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp selected_project_id(_params, _payload), do: "all"
 
-  defp dashboard_views, do: @dashboard_views
+  defp dashboard_primary_views, do: Enum.reject(@dashboard_views, &(&1.id == "settings"))
 
   defp view_from_params(%{"view" => view}, _action) when view in @view_ids, do: view
   defp view_from_params(_params, action), do: view_from_action(action)
