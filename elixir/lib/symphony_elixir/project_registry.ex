@@ -24,6 +24,7 @@ defmodule SymphonyElixir.ProjectRegistry do
     "name",
     "repository",
     "path",
+    "git",
     "worker",
     "ssh_hosts",
     "max_concurrent_agents_per_host",
@@ -89,6 +90,16 @@ defmodule SymphonyElixir.ProjectRegistry do
   defp normalize_attrs(attrs) do
     name = attrs |> get_attr(:name) |> normalize_required_string()
     project_slug = attrs |> get_attr(:project_slug) |> normalize_required_string()
+    workspace_root = attrs |> nested_attr(:workspace, :root, :workspace_root) |> normalize_optional_string()
+    repository_path = attrs |> nested_attr(:repository, :path, :repository_path) |> normalize_optional_string()
+
+    git =
+      %{
+        "name" => attrs |> nested_attr(:git, :name, :git_name) |> normalize_optional_string(),
+        "username" => attrs |> nested_attr(:git, :username, :git_username) |> normalize_optional_string(),
+        "email" => attrs |> nested_attr(:git, :email, :git_email) |> normalize_optional_string()
+      }
+      |> drop_nil_values()
 
     cond do
       is_nil(name) ->
@@ -98,11 +109,23 @@ defmodule SymphonyElixir.ProjectRegistry do
         {:error, :project_slug_required}
 
       true ->
-        {:ok, %{id: project_slug, name: name, project_slug: project_slug}}
+        {:ok,
+         %{
+           id: project_slug,
+           name: name,
+           project_slug: project_slug,
+           workspace_root: workspace_root,
+           repository_path: repository_path,
+           git: git
+         }}
     end
   end
 
   defp get_attr(attrs, key), do: Map.get(attrs, to_string(key)) || Map.get(attrs, key)
+
+  defp nested_attr(attrs, parent_key, child_key, flat_key) do
+    get_attr(attrs, flat_key) || get_attr(get_attr(attrs, parent_key) || %{}, child_key)
+  end
 
   defp normalize_required_string(value) when is_binary(value) do
     case String.trim(value) do
@@ -112,6 +135,21 @@ defmodule SymphonyElixir.ProjectRegistry do
   end
 
   defp normalize_required_string(_value), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
+
+  defp drop_nil_values(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
 
   defp ensure_unique_project(project_attrs, %Schema{} = settings) do
     new_keys = canonical_keys([project_attrs.id, project_attrs.name, project_attrs.project_slug])
@@ -176,17 +214,31 @@ defmodule SymphonyElixir.ProjectRegistry do
   end
 
   defp project_entry(project_attrs, %Schema{} = settings) do
-    %{
-      "id" => project_attrs.id,
-      "name" => project_attrs.name,
-      "tracker" => %{
-        "project_slug" => project_attrs.project_slug
-      },
-      "workspace" => %{
-        "root" => settings.workspace.root
+    project =
+      %{
+        "id" => project_attrs.id,
+        "name" => project_attrs.name,
+        "tracker" => %{
+          "project_slug" => project_attrs.project_slug
+        },
+        "workspace" => %{
+          "root" => project_attrs.workspace_root || settings.workspace.root
+        }
       }
-    }
+
+    project
+    |> maybe_put("repository", repository_entry(project_attrs.repository_path))
+    |> maybe_put("git", empty_to_nil(project_attrs.git))
   end
+
+  defp repository_entry(nil), do: nil
+  defp repository_entry(path), do: %{"path" => path}
+
+  defp empty_to_nil(map) when map == %{}, do: nil
+  defp empty_to_nil(map), do: map
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp write_workflow(path, config, prompt) do
     case File.write(path, render_workflow(config, prompt)) do

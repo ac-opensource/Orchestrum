@@ -66,6 +66,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           root: "#{project_root}"
         repository:
           path: "#{repo_path}"
+        git:
+          name: "Local Bot"
+          username: "local-bot"
+          email: "local@example.com"
     server:
       enabled: true
     observability:
@@ -84,6 +88,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert project.terminal_states == ["Done", "Canceled", "Duplicate"]
     assert project.workspace_root == project_root
     assert project.repository_path == repo_path
+    assert project.git_name == "Local Bot"
+    assert project.git_username == "local-bot"
+    assert project.git_email == "local@example.com"
     assert Config.server_port() == 4000
     assert Config.snapshot_timeout_ms() == 1234
   end
@@ -97,23 +104,36 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "schema resolves blank and missing repository paths" do
     missing_repository_env = "ORCHESTRUM_MISSING_REPOSITORY_PATH_#{System.unique_integer([:positive])}"
+    missing_git_env = "ORCHESTRUM_MISSING_GIT_USERNAME_#{System.unique_integer([:positive])}"
     previous_repository_env = System.get_env(missing_repository_env)
+    previous_git_env = System.get_env(missing_git_env)
 
     on_exit(fn ->
       restore_env(missing_repository_env, previous_repository_env)
+      restore_env(missing_git_env, previous_git_env)
     end)
 
     System.delete_env(missing_repository_env)
+    System.delete_env(missing_git_env)
 
     assert {:ok, settings} =
              Schema.parse(%{
                projects: [
                  %{id: "blank", repository: %{path: ""}},
-                 %{id: "missing", repository: %{path: "$#{missing_repository_env}"}}
+                 %{id: "missing", repository: %{path: "$#{missing_repository_env}"}},
+                 %{
+                   id: "git",
+                   git: %{name: "  ", username: "$#{missing_git_env}", email: " project@example.com "}
+                 }
                ]
              })
 
-    assert Enum.map(settings.projects, & &1.repository.path) == [nil, nil]
+    assert Enum.map(settings.projects, & &1.repository.path) == [nil, nil, nil]
+
+    git_project = Enum.at(settings.projects, 2)
+    assert git_project.git.name == nil
+    assert git_project.git.username == nil
+    assert git_project.git.email == "project@example.com"
   end
 
   test "project config convenience helpers select configured projects" do
@@ -148,6 +168,42 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert ProjectConfig.for_issue(%{project_id: "local-project"}).workspace_root == "/tmp/local-workspaces"
     assert ProjectConfig.active_state_names(%{project_id: "local-project"}) == ["Todo", "Rework"]
     assert ProjectConfig.terminal_state_names(%{project_id: "local-project"}) == ["Human Review", "Done"]
+  end
+
+  test "project summary reports local agent instruction file status" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-project-summary-agent-instructions-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo_path = Path.join(test_root, "repo")
+      File.mkdir_p!(repo_path)
+      File.write!(Path.join(repo_path, "AGENTS.md"), "Use local project instructions.\n")
+
+      File.write!(Workflow.workflow_file_path(), """
+      ---
+      tracker:
+        kind: memory
+        project_slug: "project"
+      projects:
+        - id: "local"
+          repository:
+            path: "#{repo_path}"
+      ---
+      Prompt
+      """)
+
+      assert :ok = WorkflowStore.force_reload()
+
+      assert %{agent_instruction_file: "AGENTS.md"} =
+               Config.project_configs()
+               |> hd()
+               |> ProjectConfig.summary()
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "project registry persists dashboard-added projects without dropping the default project" do
@@ -296,6 +352,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             root: "#{workspace_root}"
           repository:
             path: "#{template_repo}"
+          git:
+            name: "Project Bot"
+            username: "project-bot"
+            email: "project-bot@example.com"
       hooks:
         after_create: |
           test -d .git
@@ -319,6 +379,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert workspace == expected_workspace
       assert File.read!(Path.join(workspace, "README.md")) == "project repo\n"
       assert File.read!(Path.join(workspace, "hook.txt")) == "hook-ran\n"
+      assert {"Project Bot\n", 0} = System.cmd("git", ["-C", workspace, "config", "--get", "user.name"])
+      assert {"project-bot@example.com\n", 0} = System.cmd("git", ["-C", workspace, "config", "--get", "user.email"])
+      assert {"project-bot\n", 0} = System.cmd("git", ["-C", workspace, "config", "--get", "credential.username"])
     after
       File.rm_rf(test_root)
     end
@@ -1532,6 +1595,72 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt
+  end
+
+  test "prompt builder prepends project-local agent instructions from workspace" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-instructions-#{System.unique_integer([:positive])}"
+      )
+
+    workspace = Path.join(workspace_root, "AC-123")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "AGENTS.md"), "Use project-specific review rules.\n")
+
+      write_workflow_file!(Workflow.workflow_file_path(), prompt: "Handle {{ issue.identifier }}.")
+
+      issue = %Issue{
+        id: "issue-agent-instructions",
+        identifier: "AC-123",
+        title: "Project instructions",
+        state: "In Progress"
+      }
+
+      prompt = PromptBuilder.build_prompt(issue, workspace: workspace)
+
+      assert prompt =~ "Project-local agent instructions from AGENTS.md:"
+      assert prompt =~ "Use project-specific review rules."
+      assert prompt =~ "Handle AC-123."
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "prompt builder ignores empty project-local agent instruction files" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-empty-agent-instructions-#{System.unique_integer([:positive])}"
+      )
+
+    workspace = Path.join(workspace_root, "AC-124")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "AGENTS.md"), "   \n")
+
+      write_workflow_file!(Workflow.workflow_file_path(), prompt: "Handle {{ issue.identifier }}.")
+
+      issue = %Issue{
+        id: "issue-empty-agent-instructions",
+        identifier: "AC-124",
+        title: "Empty project instructions",
+        state: "In Progress"
+      }
+
+      assert PromptBuilder.build_prompt(issue, workspace: workspace) == "Handle AC-124."
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "agent instruction helper reports supported files and ignores missing workspaces" do
+    assert "AGENTS.md" in SymphonyElixir.AgentInstructions.filenames()
+    assert SymphonyElixir.AgentInstructions.read(nil) == nil
+    assert SymphonyElixir.AgentInstructions.find_file(nil) == nil
   end
 
   test "remote workspace lifecycle uses ssh host aliases from worker config" do
