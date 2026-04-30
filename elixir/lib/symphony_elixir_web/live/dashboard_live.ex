@@ -10,10 +10,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @runtime_tick_ms 1_000
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
+    selected_issue_identifier = params["issue_identifier"]
+
     socket =
       socket
-      |> assign(:payload, load_payload())
+      |> assign(:selected_issue_identifier, selected_issue_identifier)
+      |> assign(:event_query, "")
+      |> assign(:payload, load_payload(selected_issue_identifier))
       |> assign(:now, DateTime.utc_now())
       |> assign(:refresh_notice, nil)
       |> assign(:task_filter, "all")
@@ -42,7 +46,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_info(:observability_updated, socket) do
     {:noreply,
      socket
-     |> assign(:payload, load_payload())
+     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
      |> assign(:now, DateTime.utc_now())}
   end
 
@@ -57,12 +61,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     {:noreply,
      socket
-     |> assign(:payload, load_payload())
+     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
   end
 
   @impl true
+  def handle_event("filter_events", %{"timeline" => %{"query" => query}}, socket) do
+    {:noreply, assign(socket, :event_query, query || "")}
+  end
+
+  def handle_event("filter_events", _params, socket) do
+    {:noreply, assign(socket, :event_query, "")}
+  end
+
   def handle_event("filter_tasks", %{"filter" => filter}, socket) when filter in ["all", "running", "retrying"] do
     {:noreply, assign(socket, :task_filter, filter)}
   end
@@ -100,7 +112,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           :ok ->
             {:noreply,
              socket
-             |> assign(:payload, load_payload())
+             |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
              |> assign(:now, DateTime.utc_now())
              |> put_ticket_reply_notice(issue_id, "Reply sent")}
 
@@ -121,7 +133,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         {:noreply,
          socket
          |> reset_project_form()
-         |> assign(:payload, load_payload())
+         |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
          |> assign(:now, DateTime.utc_now())
          |> assign(:project_form_notice, "#{project.name} added")}
 
@@ -226,6 +238,162 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
+        <%= if @payload.selected_detail do %>
+          <section id="run-detail" class="ops-panel run-detail-card" aria-labelledby="run-detail-title">
+            <%= if @payload.selected_detail[:error] do %>
+              <div class="section-header">
+                <div>
+                  <h2 id="run-detail-title" class="section-title">Run details</h2>
+                  <p class="section-copy"><%= @payload.selected_detail.error.message %></p>
+                </div>
+                <a class="issue-link" href="/">Dashboard</a>
+              </div>
+            <% else %>
+              <% detail = @payload.selected_detail %>
+              <% timeline_events = filtered_timeline(detail.timeline, @event_query) %>
+
+              <div class="section-header">
+                <div>
+                  <h2 id="run-detail-title" class="section-title"><%= detail.issue_identifier %> run details</h2>
+                  <p class="section-copy">
+                    <%= detail.status %> · <%= project_label(detail.project) %>
+                  </p>
+                </div>
+                <a class="issue-link" href="/">Dashboard</a>
+              </div>
+
+              <dl class="detail-kv-grid">
+                <div>
+                  <dt>Status</dt>
+                  <dd><%= detail.status %></dd>
+                </div>
+                <div>
+                  <dt>Runtime</dt>
+                  <dd class="numeric"><%= runtime_detail(detail.runtime) %></dd>
+                </div>
+                <div>
+                  <dt>Current turn</dt>
+                  <dd class="numeric"><%= current_turn_detail(detail.current_turn) %></dd>
+                </div>
+                <div>
+                  <dt>Tokens</dt>
+                  <dd class="numeric">
+                    <%= format_int(detail.tokens.total_tokens) %>
+                    <span class="muted">In <%= format_int(detail.tokens.input_tokens) %> / Out <%= format_int(detail.tokens.output_tokens) %></span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Workspace host</dt>
+                  <dd><%= format_optional(detail.workspace.host || "local") %></dd>
+                </div>
+                <div>
+                  <dt>Workspace path</dt>
+                  <dd class="mono wrap-anywhere"><%= detail.workspace.path %></dd>
+                </div>
+                <div>
+                  <dt>Branch</dt>
+                  <dd class="mono wrap-anywhere"><%= format_optional(detail.source_control.branch_name) %></dd>
+                </div>
+                <div>
+                  <dt>PR</dt>
+                  <dd><%= format_optional(detail.source_control.pr_url) %></dd>
+                </div>
+              </dl>
+
+              <div class="detail-columns">
+                <section class="detail-panel">
+                  <div class="detail-panel-header">
+                    <h3>Timeline</h3>
+                    <form id="timeline-search-form" phx-change="filter_events">
+                      <input
+                        type="search"
+                        name="timeline[query]"
+                        value={@event_query}
+                        placeholder="Search timeline"
+                        aria-label="Search timeline"
+                        autocomplete="off"
+                      />
+                    </form>
+                  </div>
+
+                  <%= if timeline_events == [] do %>
+                    <p class="empty-state">No matching events.</p>
+                  <% else %>
+                    <ol class="timeline-list">
+                      <li :for={event <- timeline_events} class="timeline-item">
+                        <details open={event_open?(event)}>
+                          <summary>
+                            <span class="timeline-category"><%= event.category %></span>
+                            <span class="timeline-summary-text"><%= event.summary || event.event || "event" %></span>
+                          </summary>
+                          <div class="timeline-meta">
+                            <span><%= event.event || "event" %></span>
+                            <%= if event.turn_id do %>
+                              <span>turn <span class="mono"><%= event.turn_id %></span></span>
+                            <% end %>
+                            <%= if event.at do %>
+                              <span class="mono numeric"><%= event.at %></span>
+                            <% end %>
+                          </div>
+                          <pre class="timeline-detail-body"><%= event.details || event.summary || "n/a" %></pre>
+                        </details>
+                      </li>
+                    </ol>
+                  <% end %>
+                </section>
+
+                <section class="detail-panel">
+                  <h3>Retry history</h3>
+                  <%= if detail.retry_history == [] do %>
+                    <p class="empty-state">No retry attempts recorded.</p>
+                  <% else %>
+                    <ol class="compact-list">
+                      <li :for={retry <- detail.retry_history}>
+                        <span class="numeric">Attempt <%= retry.attempt %></span>
+                        <span class="muted"><%= retry.due_at || "due time unavailable" %></span>
+                        <span><%= retry.error || "no error recorded" %></span>
+                      </li>
+                    </ol>
+                  <% end %>
+
+                  <h3>Rate limits</h3>
+                  <pre class="code-panel compact-code-panel"><%= pretty_value(detail.rate_limits) %></pre>
+                </section>
+              </div>
+
+              <div class="detail-columns detail-columns-secondary">
+                <section class="detail-panel">
+                  <h3>Logs</h3>
+                  <%= if detail.logs.codex_session_logs == [] do %>
+                    <p class="empty-state"><%= detail.logs.empty_state %></p>
+                  <% else %>
+                    <ul class="link-list">
+                      <li :for={link <- detail.logs.codex_session_logs}>
+                        <a href={link.href}><%= link.label %></a>
+                        <span class="muted mono"><%= link.updated_at || link.path %></span>
+                      </li>
+                    </ul>
+                  <% end %>
+                </section>
+
+                <section class="detail-panel">
+                  <h3>Evidence</h3>
+                  <%= if detail.evidence.items == [] do %>
+                    <p class="empty-state"><%= detail.evidence.empty_state %></p>
+                  <% else %>
+                    <ul class="link-list">
+                      <li :for={link <- detail.evidence.items}>
+                        <a href={link.href}><%= link.label %></a>
+                        <span class="muted mono"><%= link.updated_at || link.path %></span>
+                      </li>
+                    </ul>
+                  <% end %>
+                </section>
+              </div>
+            <% end %>
+          </section>
+        <% end %>
+
         <section id="overview" class="ops-panel" aria-labelledby="overview-title">
           <div class="section-header">
             <div>
@@ -330,7 +498,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <td>
                         <div class="issue-stack">
                           <span class="issue-id"><%= entry.issue_identifier %></span>
-                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                          <a class="issue-link" href={entry.detail_path}>Details</a>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                         </div>
                       </td>
                       <td><span class="queue-label queue-label-running">Running</span></td>
@@ -354,7 +523,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <td>
                         <div class="issue-stack">
                           <span class="issue-id"><%= entry.issue_identifier %></span>
-                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                          <a class="issue-link" href={entry.detail_path}>Details</a>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                         </div>
                       </td>
                       <td><span class="queue-label queue-label-retrying">Retrying</span></td>
@@ -467,7 +637,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <a class="issue-link" href={entry.detail_path}>Details</a>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
                     </td>
                     <td><%= project_label(entry.project) %></td>
@@ -752,8 +923,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
-  defp load_payload do
-    Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  defp load_payload(selected_issue_identifier) do
+    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+
+    selected_detail =
+      case selected_issue_identifier do
+        identifier when is_binary(identifier) and identifier != "" ->
+          case Presenter.issue_payload(identifier, orchestrator(), snapshot_timeout_ms()) do
+            {:ok, detail} -> detail
+            {:error, :issue_not_found} -> %{error: %{code: "issue_not_found", message: "Issue not found"}}
+          end
+
+        _ ->
+          nil
+      end
+
+    Map.put(payload, :selected_detail, selected_detail)
   end
 
   defp orchestrator do
@@ -844,6 +1029,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp format_poll_interval(%{poll_interval_ms: ms}) when is_integer(ms), do: format_runtime_seconds(ms / 1_000)
   defp format_poll_interval(_polling), do: "n/a"
+
+  defp runtime_detail(%{seconds: seconds}) when is_number(seconds), do: format_runtime_seconds(seconds)
+  defp runtime_detail(%{retry_due_at: due_at}) when is_binary(due_at), do: "retry due #{due_at}"
+  defp runtime_detail(_runtime), do: "n/a"
+
+  defp current_turn_detail(%{turn_count: count, turn_id: turn_id}) when is_integer(count) and is_binary(turn_id) do
+    "#{count} / #{turn_id}"
+  end
+
+  defp current_turn_detail(%{turn_count: count}) when is_integer(count) and count > 0, do: Integer.to_string(count)
+  defp current_turn_detail(%{session_id: session_id}) when is_binary(session_id), do: session_id
+  defp current_turn_detail(_current_turn), do: "n/a"
+
+  defp format_optional(value) when is_binary(value) and value != "", do: value
+  defp format_optional(_value), do: "n/a"
+
+  defp filtered_timeline(events, query) when is_list(events) and is_binary(query) do
+    normalized_query = query |> String.trim() |> String.downcase()
+
+    if normalized_query == "" do
+      events
+    else
+      Enum.filter(events, fn event ->
+        event
+        |> timeline_search_text()
+        |> String.downcase()
+        |> String.contains?(normalized_query)
+      end)
+    end
+  end
+
+  defp filtered_timeline(events, _query) when is_list(events), do: events
+  defp filtered_timeline(_events, _query), do: []
+
+  defp timeline_search_text(event) when is_map(event) do
+    [event[:category], event[:event], event[:summary], event[:details], event[:turn_id]]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp event_open?(%{summary: summary}) when is_binary(summary), do: String.length(summary) <= 180
+  defp event_open?(_event), do: true
 
   defp format_generated_at(generated_at) when is_binary(generated_at), do: generated_at
   defp format_generated_at(_generated_at), do: "n/a"
