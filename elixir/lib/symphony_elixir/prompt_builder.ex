@@ -6,6 +6,7 @@ defmodule SymphonyElixir.PromptBuilder do
   alias SymphonyElixir.{Config, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
+  @agent_instruction_files ["AGENTS.md", "AGENT.md", "agents.md", "agent.md"]
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
@@ -14,15 +15,60 @@ defmodule SymphonyElixir.PromptBuilder do
       |> prompt_template!()
       |> parse_template!()
 
-    template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
-    |> IO.iodata_to_binary()
+    rendered_prompt =
+      template
+      |> Solid.render!(
+        %{
+          "attempt" => Keyword.get(opts, :attempt),
+          "issue" => issue |> Map.from_struct() |> to_solid_map()
+        },
+        @render_opts
+      )
+      |> IO.iodata_to_binary()
+
+    case project_agent_instructions(Keyword.get(opts, :workspace)) do
+      nil ->
+        rendered_prompt
+
+      instructions ->
+        instructions <> "\n\n" <> rendered_prompt
+    end
+  end
+
+  defp project_agent_instructions(workspace) when is_binary(workspace) do
+    Enum.find_value(@agent_instruction_files, &read_agent_instruction_file(workspace, &1))
+    |> case do
+      nil ->
+        nil
+
+      {filename, content} ->
+        """
+        Project-local agent instructions from #{filename}:
+
+        #{content}
+        """
+        |> String.trim_trailing()
+    end
+  end
+
+  defp project_agent_instructions(_workspace), do: nil
+
+  defp read_agent_instruction_file(workspace, filename) do
+    path = Path.join(workspace, filename)
+
+    case File.regular?(path) do
+      true -> read_agent_instruction_content(path, filename)
+      false -> nil
+    end
+  end
+
+  defp read_agent_instruction_content(path, filename) do
+    content = File.read!(path)
+
+    case String.trim(content) do
+      "" -> nil
+      _content -> {filename, String.trim_trailing(content)}
+    end
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)

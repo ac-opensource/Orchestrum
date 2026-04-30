@@ -22,6 +22,7 @@ defmodule SymphonyElixir.Workspace do
            :ok <- validate_workspace_path(workspace, worker_host, issue_context.workspace_root),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
            :ok <- maybe_bootstrap_repository(workspace, issue_context, created?, worker_host),
+           :ok <- maybe_configure_git_identity(workspace, issue_context, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
         {:ok, workspace}
       end
@@ -281,6 +282,74 @@ defmodule SymphonyElixir.Workspace do
 
   defp maybe_bootstrap_repository(_workspace, _issue_context, _created?, _worker_host), do: :ok
 
+  defp maybe_configure_git_identity(workspace, %{git_identity: git_identity} = issue_context, nil)
+       when map_size(git_identity) > 0 do
+    case git_repository?(workspace, nil) do
+      true ->
+        configure_local_git_identity(workspace, issue_context, git_identity)
+
+      false ->
+        :ok
+    end
+  end
+
+  defp maybe_configure_git_identity(workspace, %{git_identity: git_identity} = issue_context, worker_host)
+       when map_size(git_identity) > 0 and is_binary(worker_host) do
+    commands =
+      git_identity
+      |> git_identity_config()
+      |> Enum.map(fn {key, value} -> "git config #{shell_escape(key)} #{shell_escape(value)}" end)
+
+    script =
+      [
+        "cd #{shell_escape(workspace)}",
+        "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+        Enum.map(commands, &"  #{&1}"),
+        "fi"
+      ]
+      |> List.flatten()
+      |> Enum.join("\n")
+
+    Logger.info("Configuring project git identity #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:git_identity_config_failed, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_configure_git_identity(_workspace, _issue_context, _worker_host), do: :ok
+
+  defp configure_local_git_identity(workspace, issue_context, git_identity) do
+    Logger.info("Configuring project git identity #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
+
+    git_identity
+    |> git_identity_config()
+    |> Enum.reduce_while(:ok, fn {key, value}, :ok ->
+      case System.cmd("git", ["-C", workspace, "config", key, value], stderr_to_stdout: true) do
+        {_output, 0} -> {:cont, :ok}
+        {output, status} -> {:halt, {:error, {:git_identity_config_failed, status, output}}}
+      end
+    end)
+  end
+
+  defp git_repository?(workspace, nil) do
+    case System.cmd("git", ["-C", workspace, "rev-parse", "--is-inside-work-tree"], stderr_to_stdout: true) do
+      {"true\n", 0} -> true
+      _other -> false
+    end
+  end
+
+  defp git_identity_config(git_identity) when is_map(git_identity) do
+    [
+      {"user.name", Map.get(git_identity, :name)},
+      {"credential.username", Map.get(git_identity, :username)},
+      {"user.email", Map.get(git_identity, :email)}
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+  end
+
   defp maybe_run_before_remove_hook(workspace, nil) do
     hooks = Config.settings!().hooks
 
@@ -519,7 +588,8 @@ defmodule SymphonyElixir.Workspace do
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
       workspace_root: project.workspace_root,
-      repository_path: project.repository_path
+      repository_path: project.repository_path,
+      git_identity: git_identity(project)
     }
   end
 
@@ -528,7 +598,8 @@ defmodule SymphonyElixir.Workspace do
       issue_id: nil,
       issue_identifier: identifier,
       workspace_root: Config.settings!().workspace.root,
-      repository_path: nil
+      repository_path: nil,
+      git_identity: %{}
     }
   end
 
@@ -537,8 +608,19 @@ defmodule SymphonyElixir.Workspace do
       issue_id: nil,
       issue_identifier: "issue",
       workspace_root: Config.settings!().workspace.root,
-      repository_path: nil
+      repository_path: nil,
+      git_identity: %{}
     }
+  end
+
+  defp git_identity(project) do
+    %{
+      name: project.git_name,
+      username: project.git_username,
+      email: project.git_email
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+    |> Map.new()
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

@@ -128,9 +128,14 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - For multiple projects, define a top-level `projects` list. Each project inherits top-level
   `tracker` and `workspace` defaults and may override `tracker.project_slug`, state lists,
-  `workspace.root`, and `repository.path`.
-- `repository.path` on a project makes Orchestrum clone that repository into a newly created workspace
-  before running `hooks.after_create`.
+  `workspace.root`, `repository.path`, and `git` identity settings.
+- `repository.path` on a project may be a local path or remote Git URL. Orchestrum clones that
+  repository into a newly created workspace before running `hooks.after_create`.
+- `git.name`, `git.email`, and `git.username` on a project are applied to the prepared Git
+  workspace as `user.name`, `user.email`, and `credential.username` before `hooks.after_create`
+  runs.
+- When a prepared project workspace contains `AGENTS.md`, `AGENT.md`, `agents.md`, or `agent.md` at
+  its root, Orchestrum prepends those project-local instructions to the first Codex turn prompt.
 - `orchestrator.state_path` stores retry/session metadata as local JSON. When omitted, Orchestrum
   writes `orchestrator_state.json` next to the configured log file.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch

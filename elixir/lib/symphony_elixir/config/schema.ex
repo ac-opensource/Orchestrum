@@ -134,12 +134,31 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule GitIdentity do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:name, :string)
+      field(:username, :string)
+      field(:email, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:name, :username, :email], empty_values: [])
+    end
+  end
+
   defmodule Project do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
 
-    alias SymphonyElixir.Config.Schema.{Repository, Tracker, Workspace}
+    alias SymphonyElixir.Config.Schema.{GitIdentity, Repository, Tracker, Workspace}
 
     @primary_key false
     embedded_schema do
@@ -148,6 +167,7 @@ defmodule SymphonyElixir.Config.Schema do
       embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
       embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
       embeds_one(:repository, Repository, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:git, GitIdentity, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -157,6 +177,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast_embed(:tracker, with: &Tracker.changeset/2)
       |> cast_embed(:workspace, with: &Workspace.changeset/2)
       |> cast_embed(:repository, with: &Repository.changeset/2)
+      |> cast_embed(:git, with: &GitIdentity.changeset/2)
     end
   end
 
@@ -516,7 +537,14 @@ defmodule SymphonyElixir.Config.Schema do
       | path: resolve_optional_path(project.repository.path)
     }
 
-    %{project | tracker: tracker, workspace: workspace, repository: repository}
+    git = %{
+      project.git
+      | name: resolve_optional_string(project.git.name),
+        username: resolve_optional_string(project.git.username),
+        email: resolve_optional_string(project.git.email)
+    }
+
+    %{project | tracker: tracker, workspace: workspace, repository: repository, git: git}
   end
 
   defp inherit_tracker_list(value, fallback, schema_default) when value == schema_default and fallback != schema_default,
@@ -531,6 +559,22 @@ defmodule SymphonyElixir.Config.Schema do
       :missing -> nil
       "" -> nil
       path -> path
+    end
+  end
+
+  defp resolve_optional_string(nil), do: nil
+
+  defp resolve_optional_string(value) when is_binary(value) do
+    case resolve_env_value(value, nil) do
+      nil -> nil
+      resolved -> normalize_optional_string(resolved)
+    end
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
     end
   end
 
