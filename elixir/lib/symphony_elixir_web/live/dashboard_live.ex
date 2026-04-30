@@ -372,6 +372,69 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
+        <section id="mcp-servers" class="ops-panel" aria-labelledby="mcp-servers-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Diagnostics</p>
+              <h2 id="mcp-servers-title" class="section-title">MCP servers</h2>
+              <p class="section-copy">Configured MCP servers reported by active Codex sessions.</p>
+            </div>
+          </div>
+
+          <%= if @payload.mcp_servers == [] do %>
+            <p class="empty-state">No MCP servers reported.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 760px;">
+                <thead>
+                  <tr>
+                    <th>Server</th>
+                    <th>Status</th>
+                    <th>Issue</th>
+                    <th>Detail</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={server <- @payload.mcp_servers}>
+                    <td class="mono"><%= server.name %></td>
+                    <td>
+                      <span class={state_badge_class(server.status)}>
+                        <%= server.status %>
+                      </span>
+                    </td>
+                    <td>
+                      <%= if server.issue_identifier do %>
+                        <a class="issue-link" href={"/api/v1/#{server.issue_identifier}"}><%= server.issue_identifier %></a>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td><%= server.detail || "n/a" %></td>
+                    <td>
+                      <%= if server.action do %>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          data-label={mcp_action_label(server.action)}
+                          data-copy={mcp_action_copy(server)}
+                          aria-label={"Copy #{mcp_action_label(server.action)} instructions for #{server.name}"}
+                          title={"Copy #{mcp_action_label(server.action)} instructions for #{server.name}"}
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                        >
+                          <%= mcp_action_label(server.action) %>
+                        </button>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
         <section id="runs" class="ops-panel" aria-labelledby="runs-title">
           <div class="section-header">
             <div>
@@ -790,6 +853,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
+
+  defp mcp_action_label("re_auth"), do: "Re-auth"
+  defp mcp_action_label("re_config"), do: "Re-config"
+  defp mcp_action_label(_action), do: "Review"
+
+  defp mcp_action_copy(%{action: "re_auth", name: name}) do
+    "Re-auth MCP server #{name} in the Codex MCP configuration, then retry the affected session."
+  end
+
+  defp mcp_action_copy(%{action: "re_config", name: name}) do
+    "Review MCP server #{name} in the Codex MCP configuration, then retry the affected session."
+  end
+
+  defp mcp_action_copy(%{name: name}) do
+    "Review MCP server #{name} in the Codex MCP configuration."
+  end
 
   defp default_project_form do
     %{
