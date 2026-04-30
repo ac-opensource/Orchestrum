@@ -189,10 +189,53 @@ pre,
   min-height: 100vh;
   padding: calc(var(--topbar-height) + 1.5rem) 1.5rem 2rem calc(var(--rail-width) + 1.5rem);
   background:
-    linear-gradient(rgba(255, 255, 255, 0.026) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.026) 1px, transparent 1px),
-    var(--page);
-  background-size: 32px 32px;
+    radial-gradient(rgba(0, 240, 255, 0.05) 0.5px, transparent 0.5px),
+    var(--surface-muted);
+  background-size: 24px 24px;
+}
+
+#overview {
+  order: 1;
+}
+
+#runtime-queue {
+  order: 2;
+}
+
+#tasks {
+  order: 3;
+}
+
+#mcp-servers {
+  order: 4;
+}
+
+#runs {
+  order: 5;
+}
+
+#projects {
+  order: 6;
+}
+
+#retry-controls {
+  order: 7;
+}
+
+#claimed-controls {
+  order: 8;
+}
+
+#controls {
+  order: 9;
+}
+
+#settings {
+  order: 10;
+}
+
+#diagnostics {
+  order: 11;
 }
 
 .dashboard-shell > * {
@@ -305,8 +348,8 @@ pre,
 
 .brand-subtitle {
   margin: 0;
-  color: var(--muted);
-  font-size: 0.64rem;
+  color: #64748b;
+  font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -315,18 +358,18 @@ pre,
 .rail-footer {
   display: grid;
   gap: 0.35rem;
-  margin-top: auto;
-  padding: 0.5rem 0.25rem 0;
-  border-top: 1px solid var(--line-soft);
+  padding: 0.65rem 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .rail-footer a {
   display: inline-flex;
-  min-height: 1.7rem;
+  min-height: 2.1rem;
   align-items: center;
-  gap: 0.6rem;
-  color: var(--muted);
-  font-size: 0.78rem;
+  gap: 0.7rem;
+  padding: 0.2rem 0.75rem;
+  color: #94a3b8;
+  font-size: 0.82rem;
   font-weight: 700;
 }
 
@@ -694,10 +737,12 @@ pre,
   max-width: 100%;
   min-height: 1.85rem;
   padding: 0.22rem 0.52rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-family: "Inter", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
   white-space: nowrap;
 }
 
@@ -731,7 +776,8 @@ pre,
 
 .metric-label {
   margin: 0;
-  color: var(--muted);
+  color: #64748b;
+  font-family: "Inter", sans-serif;
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0;
@@ -748,7 +794,10 @@ pre,
 
 .metric-detail {
   margin: 0.3rem 0 0;
-  font-size: 0.84rem;
+  color: #64748b;
+  font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
 }
 
 .segmented-control {
@@ -1450,7 +1499,7 @@ pre,
 }
 
 .data-table tbody tr:hover td {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: rgba(0, 240, 255, 0.05);
 }
 
 .issue-stack,
@@ -3132,7 +3181,7 @@ pre,
     position: static;
     width: auto;
     min-height: auto;
-    padding: 0.75rem;
+    padding: 0.9rem;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -3158,6 +3207,8 @@ pre,
 
   .dashboard-header-main {
     display: grid;
+    grid-template-columns: 1fr;
+    padding: 0.75rem 0;
   }
 
   .dashboard-header-main > *,
