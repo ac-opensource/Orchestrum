@@ -47,7 +47,11 @@ defmodule SymphonyElixir.InstanceLockTest do
   end
 
   defp temp_lock_path do
-    Path.join(System.tmp_dir!(), "orchestrum-instance-lock-#{System.unique_integer([:positive])}/state.json.lock")
+    path =
+      Path.join(System.tmp_dir!(), "orchestrum-instance-lock-#{System.unique_integer([:positive])}/state.json.lock")
+
+    File.rm_rf!(Path.dirname(path))
+    path
   end
 
   defp unique_name do

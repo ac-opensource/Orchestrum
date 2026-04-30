@@ -106,7 +106,25 @@ defmodule SymphonyElixir.ProjectConfig do
       git_email: project.git_email,
       agent_instruction_file: agent_instruction_file(project.repository_path),
       active_states: project.active_states,
-      terminal_states: project.terminal_states
+      terminal_states: project.terminal_states,
+      health: health_summary(project)
+    }
+  end
+
+  @spec health_summary(t()) :: map()
+  def health_summary(%__MODULE__{} = project) do
+    problems =
+      []
+      |> add_problem(tracker_kind_problem(project))
+      |> add_problem(tracker_auth_problem(project))
+      |> add_problem(tracker_slug_problem(project))
+      |> add_problem(workspace_root_problem(project))
+      |> add_problem(repository_path_problem(project))
+      |> Enum.reverse()
+
+    %{
+      status: health_status(problems),
+      problems: problems
     }
   end
 
@@ -208,4 +226,89 @@ defmodule SymphonyElixir.ProjectConfig do
   end
 
   defp issue_project_keys(_issue), do: []
+
+  defp tracker_kind_problem(%__MODULE__{tracker_kind: nil}) do
+    problem(:missing_tracker_kind, "Tracker kind is missing.")
+  end
+
+  defp tracker_kind_problem(%__MODULE__{tracker_kind: tracker_kind}) when tracker_kind not in ["linear", "memory"] do
+    problem(:unsupported_tracker_kind, "Tracker kind is unsupported: #{tracker_kind}.")
+  end
+
+  defp tracker_kind_problem(_project), do: nil
+
+  defp tracker_auth_problem(%__MODULE__{tracker_kind: "linear", tracker_api_key: api_key})
+       when not is_binary(api_key) do
+    problem(:missing_auth, "Linear API credentials are missing.")
+  end
+
+  defp tracker_auth_problem(_project), do: nil
+
+  defp tracker_slug_problem(%__MODULE__{tracker_kind: "linear", tracker_project_slug: project_slug})
+       when not is_binary(project_slug) do
+    problem(:missing_project_slug, "Linear project slug is missing.")
+  end
+
+  defp tracker_slug_problem(%__MODULE__{tracker_kind: "linear", tracker_project_slug: project_slug}) do
+    if String.trim(project_slug) == "" do
+      problem(:missing_project_slug, "Linear project slug is missing.")
+    end
+  end
+
+  defp tracker_slug_problem(_project), do: nil
+
+  defp workspace_root_problem(%__MODULE__{workspace_root: workspace_root}) do
+    cond do
+      not is_binary(workspace_root) or String.trim(workspace_root) == "" ->
+        problem(:invalid_workspace_path, "Workspace root is missing.")
+
+      String.contains?(workspace_root, ["\n", "\r", <<0>>]) ->
+        problem(:invalid_workspace_path, "Workspace root contains invalid characters.")
+
+      File.exists?(Path.expand(workspace_root)) and not File.dir?(Path.expand(workspace_root)) ->
+        problem(:invalid_workspace_path, "Workspace root is not a directory: #{workspace_root}.")
+
+      true ->
+        nil
+    end
+  end
+
+  defp repository_path_problem(%__MODULE__{repository_path: nil}), do: nil
+
+  defp repository_path_problem(%__MODULE__{repository_path: repository_path}) when is_binary(repository_path) do
+    cond do
+      String.trim(repository_path) == "" ->
+        problem(:repository_setup_failed, "Repository path is blank.")
+
+      String.contains?(repository_path, ["\n", "\r", <<0>>]) ->
+        problem(:repository_setup_failed, "Repository path contains invalid characters.")
+
+      local_repository_path?(repository_path) and not File.exists?(Path.expand(repository_path)) ->
+        problem(:repository_setup_failed, "Repository path does not exist: #{repository_path}.")
+
+      local_repository_path?(repository_path) and File.exists?(Path.expand(repository_path)) and
+          not File.dir?(Path.expand(repository_path)) ->
+        problem(:repository_setup_failed, "Repository path is not a directory: #{repository_path}.")
+
+      true ->
+        nil
+    end
+  end
+
+  defp repository_path_problem(_project), do: nil
+
+  defp local_repository_path?(path) when is_binary(path) do
+    Path.type(path) == :absolute or String.starts_with?(path, ["./", "../", "~/"])
+  end
+
+  defp health_status(problems) do
+    if problems == [], do: "healthy", else: "error"
+  end
+
+  defp add_problem(problems, nil), do: problems
+  defp add_problem(problems, problem), do: [problem | problems]
+
+  defp problem(code, message) do
+    %{code: to_string(code), severity: "error", message: message}
+  end
 end
