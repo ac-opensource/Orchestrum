@@ -1025,6 +1025,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert filtered_html =~ "AC-RETRY"
     refute filtered_html =~ "AC-REVIEW"
 
+    searched_html =
+      view
+      |> form("#dashboard-search", %{"query" => "retry"})
+      |> render_change()
+
+    assert searched_html =~ "AC-RETRY"
+    refute searched_html =~ "AC-TODO"
+
     {:ok, _detail_view, detail_html} = live(build_conn(), "/tasks?issue=AC-TODO")
 
     assert detail_html =~ "AC-TODO"
