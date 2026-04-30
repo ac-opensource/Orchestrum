@@ -90,9 +90,26 @@ button.phx-submit-loading {
   opacity: 0.68;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+  box-shadow: none;
+}
+
 button.secondary {
   background: var(--surface);
   color: var(--ink);
+}
+
+.danger-button {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  color: var(--danger);
+}
+
+.danger-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 pre {
@@ -393,7 +410,7 @@ pre,
   white-space: normal;
 }
 
-.section-nav-link:first-child,
+.section-nav-link-active,
 .section-nav-link:hover {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-left-color: var(--accent);
@@ -414,6 +431,11 @@ pre,
   font-size: 0.56rem;
   font-weight: 850;
   letter-spacing: 0;
+}
+
+.section-nav-link-active .nav-count {
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-strong));
+  color: var(--ink);
 }
 
 .nav-count {
@@ -690,7 +712,7 @@ pre,
 }
 
 .project-settings-table {
-  min-width: 1120px;
+  min-width: 1320px;
 }
 
 .data-table th {
@@ -727,6 +749,13 @@ pre,
   display: grid;
   gap: 0.2rem;
   min-width: 0;
+}
+
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
 }
 
 .ticket-reply-cell {
@@ -932,7 +961,7 @@ pre,
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
-.control-row,
+.control-grid .control-row,
 .setting-row {
   display: flex;
   align-items: center;
