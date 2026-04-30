@@ -9,13 +9,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @dashboard_views [
-    %{id: "overview", label: "Command Center", path: "/", icon: "CC"},
-    %{id: "tasks", label: "Task Manager", path: "/tasks", icon: "TM"},
-    %{id: "runs", label: "Run Monitor", path: "/runs", icon: "RN"},
-    %{id: "projects", label: "Agent Config", path: "/projects", icon: "AG"},
-    %{id: "controls", label: "Workflow Builder", path: "/controls", icon: "WF"},
-    %{id: "settings", label: "System Settings", path: "/settings", icon: "ST"},
-    %{id: "diagnostics", label: "Audit Logs", path: "/diagnostics", icon: "LG"}
+    %{id: "overview", label: "Command Center", path: "/", icon: "dashboard"},
+    %{id: "tasks", label: "Task Manager", path: "/tasks", icon: "account_tree"},
+    %{id: "runs", label: "Run Monitor", path: "/runs", icon: "sensors"},
+    %{id: "projects", label: "Agent Config", path: "/projects", icon: "smart_toy"},
+    %{id: "controls", label: "Workflow Builder", path: "/controls", icon: "hub"},
+    %{id: "settings", label: "System Settings", path: "/settings", icon: "settings"},
+    %{id: "diagnostics", label: "Audit Logs", path: "/diagnostics", icon: "terminal"}
   ]
   @view_ids Enum.map(@dashboard_views, & &1.id)
 
@@ -266,8 +266,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     <section class="dashboard-shell" aria-labelledby="dashboard-title">
       <aside class="command-rail" aria-label="Orchestrum command navigation">
         <div class="brand-lockup">
-          <p class="brand-title">Orchestrum</p>
-          <p class="brand-subtitle">AI Orchestration</p>
+          <p class="brand-title">AION-OS</p>
+          <p class="brand-subtitle">Orchestrum v2.4.0</p>
         </div>
 
         <nav class="section-nav" aria-label="Dashboard sections">
@@ -278,7 +278,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               aria-current={if item.id == @current_view, do: "page", else: nil}
               data-dashboard-view={item.id}
             >
-              <span class="nav-icon" aria-hidden="true"><%= item.icon %></span>
+              <span class="nav-icon material-symbols-outlined" aria-hidden="true"><%= item.icon %></span>
               <span><%= item.label %></span>
               <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
                 <span class="nav-count numeric"><%= count %></span>
@@ -287,53 +287,86 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </nav>
 
+        <.link patch={dashboard_project_path(dashboard_view_path("controls"), @selected_project_id)} class="rail-command-button">
+          <span class="material-symbols-outlined" aria-hidden="true">add_circle</span>
+          <span>New Deployment</span>
+        </.link>
+
         <div class="rail-footer" aria-label="Support links">
           <.link
             patch={dashboard_project_path(dashboard_view_path("settings"), @selected_project_id)}
             data-dashboard-view="settings"
             aria-current={if @current_view == "settings", do: "page", else: nil}
           >
+            <span class="material-symbols-outlined" aria-hidden="true">settings</span>
             System Settings
           </.link>
-          <a href="/api/v1/state">State API</a>
+          <a href="/api/v1/state">
+            <span class="material-symbols-outlined" aria-hidden="true">data_object</span>
+            State API
+          </a>
         </div>
       </aside>
 
       <header class="dashboard-header">
         <div class="dashboard-header-main">
-          <div>
+          <div class="top-app-title">
             <p class="eyebrow">System Monitor</p>
             <h1 id="dashboard-title" class="dashboard-title">
               Operations Command Center
             </h1>
-            <p class="dashboard-copy">
-              Current state, queue pressure, token usage, and operational controls for this local runtime.
-            </p>
           </div>
+
+          <form class="top-search" action="/tasks" method="get" role="search">
+            <span class="material-symbols-outlined" aria-hidden="true">search</span>
+            <input
+              name="task_board[query]"
+              type="search"
+              autocomplete="off"
+              aria-label="Search operational tasks"
+              placeholder="Search operational tasks..."
+            />
+          </form>
 
           <div class="toolbar" aria-label="Dashboard actions">
             <button
               type="button"
-              class="toolbar-button"
+              class="toolbar-icon-button"
               phx-click="refresh_now"
               phx-disable-with="Refreshing"
               data-confirm="Queue an immediate poll and reconciliation cycle?"
               aria-label="Refresh dashboard now"
               title="Refresh dashboard now"
             >
-              <span class="button-icon" aria-hidden="true">
-                <svg viewBox="0 0 20 20" focusable="false">
-                  <path d="M16 6v4h-4" />
-                  <path d="M4 14v-4h4" />
-                  <path d="M14.6 7A5.5 5.5 0 0 0 5 8.2" />
-                  <path d="M5.4 13A5.5 5.5 0 0 0 15 11.8" />
-                </svg>
-              </span>
-              <span>Refresh</span>
+              <span class="material-symbols-outlined" aria-hidden="true">refresh</span>
             </button>
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("diagnostics"), @selected_project_id)}
+              class="toolbar-icon-button"
+              aria-label="Open audit logs"
+              title="Open audit logs"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
+            </.link>
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("runs"), @selected_project_id)}
+              class="toolbar-icon-button"
+              aria-label="Open run monitor"
+              title="Open run monitor"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">sensors</span>
+            </.link>
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("projects"), @selected_project_id)}
+              class="toolbar-icon-button"
+              aria-label="Open agent configuration"
+              title="Open agent configuration"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">account_circle</span>
+            </.link>
             <button
               type="button"
-              class="subtle-button"
+              class="subtle-button toolbar-control-button"
               phx-click="control"
               phx-value-action={global_polling_action(@payload)}
               data-confirm={global_polling_confirm(@payload)}
@@ -529,7 +562,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section id="overview" class="ops-panel" aria-labelledby="overview-title">
           <div class="section-header">
             <div>
-              <p class="section-kicker">Overview</p>
+              <p class="section-kicker">System Pulse</p>
               <h2 id="overview-title" class="section-title">Runtime summary</h2>
             </div>
             <span class="timestamp-pill">Generated <%= format_generated_at(@payload.generated_at) %></span>

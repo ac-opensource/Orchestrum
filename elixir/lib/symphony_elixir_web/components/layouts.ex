@@ -20,6 +20,12 @@ defmodule SymphonyElixirWeb.Layouts do
         <script defer src="/vendor/phoenix_html/phoenix_html.js"></script>
         <script defer src="/vendor/phoenix/phoenix.js"></script>
         <script defer src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+          rel="stylesheet"
+        />
         <script>
           window.addEventListener("DOMContentLoaded", function () {
             var csrfToken = document
