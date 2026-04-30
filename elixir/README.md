@@ -9,7 +9,7 @@ This directory contains the current Elixir/OTP implementation of Orchestrum, bas
 
 ## Screenshot
 
-![Orchestrum Elixir screenshot](../.github/media/elixir-screenshot.png)
+![Orchestrum Elixir screenshot](../.github/media/ac31-command-center-desktop.png)
 
 ## How it works
 

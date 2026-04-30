@@ -197,12 +197,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell" aria-labelledby="dashboard-title">
+      <aside class="command-rail" aria-label="Orchestrum command navigation">
+        <div class="brand-lockup">
+          <p class="brand-title">Orchestrum</p>
+          <p class="brand-subtitle">AI Orchestration</p>
+        </div>
+
+        <nav class="section-nav" aria-label="Dashboard sections">
+          <a class="section-nav-link" href="#overview">
+            <span class="nav-icon" aria-hidden="true">CC</span>
+            <span>Command Center</span>
+            <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
+          </a>
+          <a class="section-nav-link" href="#tasks">
+            <span class="nav-icon" aria-hidden="true">TM</span>
+            <span>Task Manager</span>
+            <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
+          </a>
+          <a class="section-nav-link" href="#projects">
+            <span class="nav-icon" aria-hidden="true">AG</span>
+            <span>Agent Config</span>
+            <span class="nav-count numeric"><%= visible_project_count(@payload, @selected_project_id) %></span>
+          </a>
+          <a class="section-nav-link" href="#controls">
+            <span class="nav-icon" aria-hidden="true">WF</span>
+            <span>Workflow Builder</span>
+          </a>
+          <a class="section-nav-link" href="#diagnostics">
+            <span class="nav-icon" aria-hidden="true">LG</span>
+            <span>Audit Logs</span>
+          </a>
+          <a class="section-nav-link" href="#runs">
+            <span class="nav-icon" aria-hidden="true">RN</span>
+            <span>Run Monitor</span>
+            <span class="nav-count numeric"><%= visible_running_count(@payload, @selected_project_id) %></span>
+          </a>
+        </nav>
+
+        <div class="rail-footer" aria-label="Support links">
+          <a href="#settings">System Settings</a>
+          <a href="/api/v1/state">State API</a>
+        </div>
+      </aside>
+
       <header class="dashboard-header">
         <div class="dashboard-header-main">
           <div>
-            <p class="eyebrow">Orchestrum Observability</p>
+            <p class="eyebrow">System Monitor</p>
             <h1 id="dashboard-title" class="dashboard-title">
-              Operations Dashboard
+              Operations Command Center
             </h1>
             <p class="dashboard-copy">
               Current state, queue pressure, token usage, and operational controls for this local runtime.
@@ -243,28 +286,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
-
-      <nav class="section-nav" aria-label="Dashboard sections">
-        <a class="section-nav-link" href="#overview">
-          <span>Overview</span>
-          <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#tasks">
-          <span>Tasks</span>
-          <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#runs">
-          <span>Runs</span>
-          <span class="nav-count numeric"><%= visible_running_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#projects">
-          <span>Projects</span>
-          <span class="nav-count numeric"><%= visible_project_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#controls">Controls</a>
-        <a class="section-nav-link" href="#settings">Settings</a>
-        <a class="section-nav-link" href="#diagnostics">Diagnostics</a>
-      </nav>
 
       <%= if @payload[:error] do %>
         <section id="diagnostics" class="ops-panel error-panel" aria-labelledby="diagnostics-title" role="alert">

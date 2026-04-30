@@ -671,6 +671,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
+    assert dashboard_css =~ "color-scheme: dark"
+    assert dashboard_css =~ ".command-rail"
     assert dashboard_css =~ ".section-nav"
     assert dashboard_css =~ ".segmented-control"
     assert dashboard_css =~ ":focus-visible"
@@ -709,9 +711,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Operations Command Center"
+    assert html =~ "Orchestrum"
     assert html =~ "aria-label=\"Dashboard sections\""
-    assert html =~ "Overview"
+    assert html =~ "Command Center"
+    assert html =~ "Task Manager"
+    assert html =~ "Agent Config"
+    assert html =~ "Workflow Builder"
+    assert html =~ "Audit Logs"
     assert html =~ "Task board"
     assert html =~ "Project command center"
     assert html =~ "Operator controls"
