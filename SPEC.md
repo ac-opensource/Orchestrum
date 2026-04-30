@@ -1445,6 +1445,8 @@ Enablement (extension):
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
 - If the dashboard exposes project management controls, adding a project MUST persist through the
   same `WORKFLOW.md` `projects` configuration model used by orchestration and polling.
+- If the dashboard exposes ticket reply controls, submitted replies MUST use the configured tracker
+  adapter write path rather than only updating local observability state.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
