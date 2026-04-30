@@ -322,6 +322,16 @@ pre,
   text-decoration: none;
 }
 
+.section-nav-link-active {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.section-nav-link-active .nav-count {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--surface);
+}
+
 .nav-count {
   min-width: 1.35rem;
   padding: 0.05rem 0.35rem;
