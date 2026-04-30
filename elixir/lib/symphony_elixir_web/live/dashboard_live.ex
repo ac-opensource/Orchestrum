@@ -8,6 +8,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, ProjectRegistry, Tracker}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @dashboard_views [
+    %{id: "overview", label: "Overview", path: "/"},
+    %{id: "tasks", label: "Tasks", path: "/tasks"},
+    %{id: "runs", label: "Runs", path: "/runs"},
+    %{id: "projects", label: "Projects", path: "/projects"},
+    %{id: "controls", label: "Controls", path: "/controls"},
+    %{id: "settings", label: "Settings", path: "/settings"},
+    %{id: "diagnostics", label: "Diagnostics", path: "/diagnostics"}
+  ]
+  @view_ids Enum.map(@dashboard_views, & &1.id)
 
   @impl true
   def mount(params, _session, socket) do
@@ -19,6 +29,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:event_query, "")
       |> assign(:payload, load_payload(selected_issue_identifier))
       |> assign(:now, DateTime.utc_now())
+      |> assign(:current_view, "overview")
       |> assign(:selected_project_id, "all")
       |> assign(:refresh_notice, nil)
       |> assign(:task_filter, "all")
@@ -41,7 +52,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, assign(socket, :selected_project_id, selected_project_id(params, socket.assigns.payload))}
+    {:noreply,
+     socket
+     |> assign(:current_view, view_from_params(params, socket.assigns.live_action))
+     |> assign(:selected_project_id, selected_project_id(params, socket.assigns.payload))}
   end
 
   @impl true
@@ -245,25 +259,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </header>
 
       <nav class="section-nav" aria-label="Dashboard sections">
-        <a class="section-nav-link" href="#overview">
-          <span>Overview</span>
-          <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#tasks">
-          <span>Tasks</span>
-          <span class="nav-count numeric"><%= visible_task_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#runs">
-          <span>Runs</span>
-          <span class="nav-count numeric"><%= visible_running_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#projects">
-          <span>Projects</span>
-          <span class="nav-count numeric"><%= visible_project_count(@payload, @selected_project_id) %></span>
-        </a>
-        <a class="section-nav-link" href="#controls">Controls</a>
-        <a class="section-nav-link" href="#settings">Settings</a>
-        <a class="section-nav-link" href="#diagnostics">Diagnostics</a>
+        <%= for item <- dashboard_views() do %>
+          <.link
+            patch={item.path}
+            class={nav_link_class(item.id, @current_view)}
+            aria-current={if item.id == @current_view, do: "page", else: nil}
+            data-dashboard-view={item.id}
+          >
+            <span><%= item.label %></span>
+            <%= if count = dashboard_nav_count(item.id, @payload, @selected_project_id) do %>
+              <span class="nav-count numeric"><%= count %></span>
+            <% end %>
+          </.link>
+        <% end %>
       </nav>
 
       <%= if @payload[:error] do %>
@@ -1077,6 +1085,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp selected_project_id(_params, _payload), do: "all"
 
+  defp dashboard_views, do: @dashboard_views
+
+  defp view_from_params(%{"view" => view}, _action) when view in @view_ids, do: view
+  defp view_from_params(_params, action), do: view_from_action(action)
+
+  defp view_from_action(:show), do: "runs"
+
+  defp view_from_action(action)
+       when action in [:overview, :tasks, :runs, :projects, :controls, :settings, :diagnostics],
+       do: Atom.to_string(action)
+
+  defp view_from_action(_action), do: "overview"
+
+  defp nav_link_class(view, view), do: "section-nav-link section-nav-link-active"
+  defp nav_link_class(_view, _current_view), do: "section-nav-link"
+
+  defp dashboard_nav_count(view, payload, project_id) when view in ["overview", "tasks"],
+    do: visible_task_count(payload, project_id)
+
+  defp dashboard_nav_count("runs", payload, project_id), do: visible_running_count(payload, project_id)
+  defp dashboard_nav_count("projects", payload, project_id), do: visible_project_count(payload, project_id)
+  defp dashboard_nav_count(_view, _payload, _project_id), do: nil
+
   defp visible_projects(projects, "all") when is_list(projects), do: projects
 
   defp visible_projects(projects, project_id) when is_list(projects) do
@@ -1155,15 +1186,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp normalize_key(_value), do: nil
 
-  defp project_filter_path(project_id) when project_id in [nil, "", "all"], do: "/"
+  defp project_filter_path(project_id), do: dashboard_project_path("/", project_id)
 
-  defp project_filter_path(project_id) do
-    "/?" <> URI.encode_query(%{"project" => project_id})
-  end
+  defp dashboard_section_path(project_id, section), do: dashboard_project_path(dashboard_view_path(section), project_id)
 
-  defp dashboard_section_path(project_id, section) do
-    project_filter_path(project_id) <> "##{section}"
-  end
+  defp dashboard_project_path(path, project_id) when project_id in [nil, "", "all"], do: path
+  defp dashboard_project_path(path, project_id), do: path <> "?" <> URI.encode_query(%{"project" => project_id})
+
+  defp dashboard_view_path("overview"), do: "/"
+  defp dashboard_view_path(section) when section in @view_ids, do: "/" <> section
+  defp dashboard_view_path(_section), do: "/"
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
