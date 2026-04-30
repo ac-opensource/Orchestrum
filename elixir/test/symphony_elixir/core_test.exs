@@ -707,6 +707,214 @@ defmodule SymphonyElixir.CoreTest do
     assert {:noreply, ^coalesced_state} = Orchestrator.handle_info({:tick, stale_tick_token}, coalesced_state)
   end
 
+  test "orchestrator controls pause and resume global and project polling without clearing runs" do
+    issue = %Issue{
+      id: "issue-running-control",
+      identifier: "MT-RUN",
+      title: "Running control",
+      state: "In Progress",
+      project: %{slug: "project"}
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      started_at: DateTime.utc_now()
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{issue.id => running_entry},
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil
+    }
+
+    assert {:reply, %{ok: true, status: "paused"}, paused_state} =
+             Orchestrator.handle_call({:control, {:pause_polling, :global}}, {self(), make_ref()}, state)
+
+    assert paused_state.polling_paused == true
+    assert Map.has_key?(paused_state.running, issue.id)
+
+    assert {:reply, %{queued: false, rejected: true, reason: "polling_paused"}, ^paused_state} =
+             Orchestrator.handle_call(:request_refresh, {self(), make_ref()}, paused_state)
+
+    assert {:reply, %{ok: true, status: "queued"}, resumed_state} =
+             Orchestrator.handle_call({:control, {:resume_polling, :global}}, {self(), make_ref()}, paused_state)
+
+    assert resumed_state.polling_paused == false
+    assert is_reference(resumed_state.tick_timer_ref)
+    assert Map.has_key?(resumed_state.running, issue.id)
+
+    empty_state = %{resumed_state | running: %{}, claimed: MapSet.new(), tick_timer_ref: nil, tick_token: nil}
+
+    assert {:reply, %{ok: true, status: "paused"}, project_paused_state} =
+             Orchestrator.handle_call(
+               {:control, {:pause_polling, {:project, "project"}}},
+               {self(), make_ref()},
+               empty_state
+             )
+
+    assert MapSet.member?(project_paused_state.paused_projects, "project")
+    refute Orchestrator.should_dispatch_issue_for_test(issue, project_paused_state)
+
+    assert {:reply, %{ok: true, status: "queued"}, project_resumed_state} =
+             Orchestrator.handle_call(
+               {:control, {:resume_polling, {:project, "project"}}},
+               {self(), make_ref()},
+               project_paused_state
+             )
+
+    refute MapSet.member?(project_resumed_state.paused_projects, "project")
+  end
+
+  test "orchestrator project dispatch-now reports queued coalesced and rejected states" do
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      claimed: MapSet.new(),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil
+    }
+
+    assert {:reply, %{ok: true, status: "queued", queued: true, coalesced: false}, queued_state} =
+             Orchestrator.handle_call(
+               {:control, {:dispatch_project_now, "project"}},
+               {self(), make_ref()},
+               state
+             )
+
+    assert MapSet.member?(queued_state.pending_dispatch_projects, "project")
+
+    assert {:reply, %{ok: true, status: "coalesced", queued: true, coalesced: true}, ^queued_state} =
+             Orchestrator.handle_call(
+               {:control, {:dispatch_project_now, "project"}},
+               {self(), make_ref()},
+               queued_state
+             )
+
+    assert {:reply, %{ok: false, code: "polling_paused"}, _paused_state} =
+             Orchestrator.handle_call(
+               {:control, {:dispatch_project_now, "project"}},
+               {self(), make_ref()},
+               %{state | polling_paused: true}
+             )
+
+    assert {:reply, %{ok: false, code: "project_not_found"}, ^state} =
+             Orchestrator.handle_call(
+               {:control, {:dispatch_project_now, "missing-project"}},
+               {self(), make_ref()},
+               state
+             )
+  end
+
+  test "orchestrator run retry and claim controls enforce safe state transitions" do
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    issue = %Issue{
+      id: "issue-run-control",
+      identifier: "MT-CANCEL",
+      title: "Cancel control",
+      state: "In Progress"
+    }
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      started_at: DateTime.utc_now()
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{issue.id => running_entry},
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil
+    }
+
+    assert {:reply, %{ok: true, status: "canceled"}, canceled_state} =
+             Orchestrator.handle_call({:control, {:cancel_run, "MT-CANCEL"}}, {self(), make_ref()}, state)
+
+    refute Map.has_key?(canceled_state.running, issue.id)
+    refute MapSet.member?(canceled_state.claimed, issue.id)
+    Process.sleep(20)
+    refute Process.alive?(worker_pid)
+
+    assert {:reply, %{ok: false, code: "issue_not_running"}, ^canceled_state} =
+             Orchestrator.handle_call(
+               {:control, {:cancel_run, "MT-CANCEL"}},
+               {self(), make_ref()},
+               canceled_state
+             )
+
+    retry_state = %{
+      canceled_state
+      | retry_attempts: %{
+          "issue-retry-control" => %{
+            attempt: 2,
+            timer_ref: nil,
+            retry_token: make_ref(),
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: "MT-RETRY",
+            error: "boom"
+          }
+        },
+        claimed: MapSet.new(["issue-retry-control"])
+    }
+
+    assert {:reply, %{ok: true, status: "queued"}, retry_now_state} =
+             Orchestrator.handle_call({:control, {:retry_now, "MT-RETRY"}}, {self(), make_ref()}, retry_state)
+
+    refute Map.has_key?(retry_now_state.retry_attempts, "issue-retry-control")
+    assert_receive {:retry_issue_now, "issue-retry-control", 2, %{identifier: "MT-RETRY"}}
+
+    assert {:reply, %{ok: false, code: "retry_not_found"}, ^retry_now_state} =
+             Orchestrator.handle_call(
+               {:control, {:retry_now, "MT-RETRY"}},
+               {self(), make_ref()},
+               retry_now_state
+             )
+
+    clear_state = %{retry_state | claimed: MapSet.new(["issue-retry-control", "stale-claim"])}
+
+    assert {:reply, %{ok: true, status: "cleared"}, cleared_state} =
+             Orchestrator.handle_call({:control, {:clear_retry, "MT-RETRY"}}, {self(), make_ref()}, clear_state)
+
+    refute Map.has_key?(cleared_state.retry_attempts, "issue-retry-control")
+    refute MapSet.member?(cleared_state.claimed, "issue-retry-control")
+
+    assert {:reply, %{ok: true, status: "released"}, released_state} =
+             Orchestrator.handle_call(
+               {:control, {:release_claim, "stale-claim"}},
+               {self(), make_ref()},
+               cleared_state
+             )
+
+    refute MapSet.member?(released_state.claimed, "stale-claim")
+
+    assert {:reply, %{ok: false, code: "retry_pending"}, ^retry_state} =
+             Orchestrator.handle_call(
+               {:control, {:release_claim, "MT-RETRY"}},
+               {self(), make_ref()},
+               retry_state
+             )
+  end
+
   test "select_worker_host_for_test skips full ssh hosts under the shared per-host cap" do
     write_workflow_file!(Workflow.workflow_file_path(),
       worker_ssh_hosts: ["worker-a", "worker-b"],

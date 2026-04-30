@@ -76,6 +76,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:control, request}, _from, state) do
+      {:reply, state |> Keyword.get(:controls, %{}) |> Map.get(request, :unavailable), state}
+    end
   end
 
   setup do
@@ -359,7 +363,21 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload["counts"] == %{"running" => 1, "retrying" => 1}
     assert [%{"tracker_project_slug" => "project"}] = state_payload["projects"]
-    assert state_payload["polling"] == %{"checking?" => false, "next_poll_in_ms" => 25_000, "poll_interval_ms" => 30_000}
+
+    assert state_payload["polling"] == %{
+             "checking?" => false,
+             "paused?" => false,
+             "next_poll_in_ms" => 25_000,
+             "poll_interval_ms" => 30_000
+           }
+
+    assert state_payload["controls"] == %{
+             "polling_paused" => false,
+             "paused_projects" => [],
+             "pending_dispatch_projects" => []
+           }
+
+    assert state_payload["claimed"] == []
 
     assert [
              %{
@@ -485,6 +503,108 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
+  test "phoenix control api reports success rejected unsupported and unavailable states" do
+    orchestrator_name = Module.concat(__MODULE__, :ControlApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        controls: %{
+          {:pause_polling, :global} => %{
+            ok: true,
+            action: "pause_polling",
+            status: "paused",
+            message: "Global polling paused",
+            target: %{scope: "global"},
+            result_id: "ctrl-api-pause",
+            requested_at: DateTime.utc_now()
+          },
+          {:cancel_run, "MT-HTTP"} => %{
+            ok: false,
+            action: "cancel_run",
+            status: "rejected",
+            code: "issue_not_running",
+            message: "Issue does not have an active run",
+            target: %{issue_identifier: "MT-HTTP"},
+            result_id: "ctrl-api-reject",
+            requested_at: DateTime.utc_now()
+          }
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    pause_payload = json_response(post(build_conn(), "/api/v1/control/polling/pause", %{}), 200)
+    assert pause_payload["ok"] == true
+    assert pause_payload["status"] == "paused"
+    assert pause_payload["result_id"] == "ctrl-api-pause"
+    assert is_binary(pause_payload["requested_at"])
+
+    rejected_payload =
+      json_response(post(build_conn(), "/api/v1/control/issues/MT-HTTP/cancel", %{}), 409)
+
+    assert rejected_payload["ok"] == false
+    assert rejected_payload["code"] == "issue_not_running"
+    assert rejected_payload["result_id"] == "ctrl-api-reject"
+
+    assert json_response(post(build_conn(), "/api/v1/control/projects/project/nope", %{}), 422) ==
+             %{
+               "error" => %{
+                 "code" => "unsupported_action",
+                 "message" => "Unsupported orchestrator control"
+               }
+             }
+  end
+
+  test "phoenix control api reports unavailable orchestrator state" do
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :MissingControlOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    assert json_response(post(build_conn(), "/api/v1/control/polling/pause", %{}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
+  end
+
+  test "phoenix control api rejects unauthorized token-protected control requests" do
+    orchestrator_name = Module.concat(__MODULE__, :AuthorizedControlApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        controls: %{
+          {:pause_polling, :global} => %{
+            ok: true,
+            action: "pause_polling",
+            status: "paused",
+            message: "Global polling paused",
+            target: %{scope: "global"},
+            result_id: "ctrl-authorized",
+            requested_at: DateTime.utc_now()
+          }
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50, control_token: "secret")
+
+    assert json_response(post(build_conn(), "/api/v1/control/polling/pause", %{}), 401) ==
+             %{"error" => %{"code" => "unauthorized", "message" => "Control token is invalid"}}
+
+    conn =
+      build_conn()
+      |> Plug.Conn.put_req_header("x-orchestrum-control-token", "secret")
+      |> post("/api/v1/control/polling/pause", %{})
+
+    assert %{"ok" => true, "result_id" => "ctrl-authorized"} = json_response(conn, 200)
+  end
+
   test "phoenix observability api preserves snapshot timeout behavior" do
     timeout_orchestrator = Module.concat(__MODULE__, :TimeoutOrchestrator)
     {:ok, _pid} = SlowOrchestrator.start_link(name: timeout_orchestrator)
@@ -576,6 +696,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+    assert html =~ "Pause polling"
+    assert html =~ "Dispatch now"
+    assert html =~ "Stop"
+    assert html =~ "Retry now"
+    assert html =~ "Clear"
+    assert html =~ "data-confirm="
+    assert html =~ "phx-disable-with=\"Working\""
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -616,6 +743,57 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "dashboard liveview sends controls and renders result messages" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardControlOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        controls: %{
+          {:pause_polling, :global} => %{
+            ok: true,
+            action: "pause_polling",
+            status: "paused",
+            message: "Global polling paused",
+            target: %{scope: "global"},
+            result_id: "ctrl-live-pause",
+            requested_at: DateTime.utc_now()
+          },
+          {:cancel_run, "MT-HTTP"} => %{
+            ok: false,
+            action: "cancel_run",
+            status: "rejected",
+            code: "issue_not_running",
+            message: "Issue does not have an active run",
+            target: %{issue_identifier: "MT-HTTP"},
+            result_id: "ctrl-live-reject",
+            requested_at: DateTime.utc_now()
+          }
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "data-confirm=\"Pause global polling?\""
+    assert html =~ "phx-disable-with=\"Working\""
+
+    html =
+      view
+      |> element("button[phx-value-action=\"pause_global\"]")
+      |> render_click()
+
+    assert html =~ "Global polling paused (ctrl-live-pause)"
+
+    html =
+      view
+      |> element(~s(button[phx-value-action="cancel_run"][phx-value-target="MT-HTTP"]))
+      |> render_click()
+
+    assert html =~ "Issue does not have an active run (ctrl-live-reject)"
   end
 
   test "dashboard liveview adds projects to workflow config" do
@@ -704,6 +882,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+    assert html =~ "disabled"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

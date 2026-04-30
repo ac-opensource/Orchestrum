@@ -71,6 +71,13 @@ button:hover {
   box-shadow: 0 12px 24px rgba(16, 163, 127, 0.22);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+  box-shadow: none;
+}
+
 button.secondary {
   background: var(--card);
   color: var(--ink);
@@ -80,6 +87,16 @@ button.secondary {
 
 button.secondary:hover {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.danger-button {
+  border-color: rgba(180, 35, 24, 0.38);
+  color: var(--danger);
+}
+
+.danger-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .icon-button {
@@ -199,6 +216,7 @@ pre,
   display: grid;
   justify-items: end;
   align-content: start;
+  gap: 0.45rem;
   min-width: min(100%, 9rem);
 }
 
@@ -402,6 +420,13 @@ pre,
   display: grid;
   gap: 0.24rem;
   min-width: 0;
+}
+
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
 }
 
 .event-text {

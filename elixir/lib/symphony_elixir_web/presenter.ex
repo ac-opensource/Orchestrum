@@ -18,9 +18,11 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying)
           },
           projects: Enum.map(Config.project_configs(), &ProjectConfig.summary/1),
-          polling: snapshot.polling,
+          polling: Map.put_new(snapshot.polling, :paused?, false),
+          controls: Map.get(snapshot, :controls, default_controls()),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          claimed: Enum.map(Map.get(snapshot, :claimed, []), &claimed_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -58,8 +60,81 @@ defmodule SymphonyElixirWeb.Presenter do
         {:error, :unavailable}
 
       payload ->
-        {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+        {:ok, encode_datetimes(payload)}
     end
+  end
+
+  @spec control_payload(GenServer.name(), String.t()) ::
+          {:ok, map()} | {:error, :unavailable}
+  def control_payload(orchestrator, action), do: control_payload(orchestrator, action, nil)
+
+  @spec control_payload(GenServer.name(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, :unavailable}
+  def control_payload(orchestrator, "pause_global", _target) do
+    orchestrator
+    |> Orchestrator.pause_polling(:global)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "resume_global", _target) do
+    orchestrator
+    |> Orchestrator.resume_polling(:global)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "pause_project", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.pause_polling({:project, project_id})
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "resume_project", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.resume_polling({:project, project_id})
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "dispatch_project_now", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.request_project_dispatch(project_id)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "cancel_run", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.cancel_run(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "retry_now", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.retry_now(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "clear_retry", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.clear_retry(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "release_claim", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.release_claim(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(_orchestrator, action, target) do
+    {:ok,
+     %{
+       ok: false,
+       action: action,
+       status: "rejected",
+       code: "unsupported_action",
+       message: "Unsupported orchestrator control",
+       target: %{id: target},
+       requested_at: DateTime.utc_now() |> DateTime.to_iso8601()
+     }}
   end
 
   defp issue_payload_body(issue_identifier, running, retry) do
@@ -132,6 +207,15 @@ defmodule SymphonyElixirWeb.Presenter do
       workspace_path: Map.get(entry, :workspace_path)
     }
   end
+
+  defp claimed_entry_payload(%{issue_id: issue_id} = entry) do
+    %{
+      issue_id: issue_id,
+      safe?: Map.get(entry, :safe?, false)
+    }
+  end
+
+  defp claimed_entry_payload(entry), do: entry
 
   defp running_issue_payload(running) do
     %{
@@ -220,4 +304,20 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp default_controls do
+    %{polling_paused: false, paused_projects: [], pending_dispatch_projects: []}
+  end
+
+  defp control_result(:unavailable), do: {:error, :unavailable}
+  defp control_result(payload) when is_map(payload), do: {:ok, encode_datetimes(payload)}
+
+  defp encode_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp encode_datetimes(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {key, encode_datetimes(nested_value)} end)
+  end
+
+  defp encode_datetimes(values) when is_list(values), do: Enum.map(values, &encode_datetimes/1)
+  defp encode_datetimes(value), do: value
 end
