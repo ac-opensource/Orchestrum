@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   @persistence_version 1
+  @event_history_limit 50
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -145,7 +146,10 @@ defmodule SymphonyElixir.Orchestrator do
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
                 workspace_path: Map.get(running_entry, :workspace_path),
-                project: Map.get(running_entry, :project)
+                project: Map.get(running_entry, :project),
+                retry_history: Map.get(running_entry, :retry_history, []),
+                branch_name: get_in(running_entry, [:issue, Access.key(:branch_name)]),
+                issue_url: get_in(running_entry, [:issue, Access.key(:url)])
               })
 
             _ ->
@@ -158,7 +162,10 @@ defmodule SymphonyElixir.Orchestrator do
                 error: "agent exited: #{inspect(reason)}",
                 worker_host: Map.get(running_entry, :worker_host),
                 workspace_path: Map.get(running_entry, :workspace_path),
-                project: Map.get(running_entry, :project)
+                project: Map.get(running_entry, :project),
+                retry_history: Map.get(running_entry, :retry_history, []),
+                branch_name: get_in(running_entry, [:issue, Access.key(:branch_name)]),
+                issue_url: get_in(running_entry, [:issue, Access.key(:url)])
               })
           end
 
@@ -529,7 +536,10 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path),
           session_id: Map.get(running_entry, :session_id),
-          project: Map.get(running_entry, :project)
+          project: Map.get(running_entry, :project),
+          retry_history: Map.get(running_entry, :retry_history, []),
+          branch_name: get_in(running_entry, [:issue, Access.key(:branch_name)]),
+          issue_url: get_in(running_entry, [:issue, Access.key(:url)])
         })
 
       true ->
@@ -561,7 +571,10 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: Map.get(running_entry, :session_id),
-      project: Map.get(running_entry, :project)
+      project: Map.get(running_entry, :project),
+      retry_history: Map.get(running_entry, :retry_history, []),
+      branch_name: get_in(running_entry, [:issue, Access.key(:branch_name)]),
+      issue_url: get_in(running_entry, [:issue, Access.key(:url)])
     })
   end
 
@@ -755,10 +768,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, retry_metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set(issue)) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, retry_metadata)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -775,7 +788,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, retry_metadata) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -784,11 +797,11 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, retry_metadata)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, retry_metadata) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
@@ -807,9 +820,11 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
+            current_turn_id: nil,
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
+            event_history: [],
             codex_app_server_pid: nil,
             codex_input_tokens: 0,
             codex_output_tokens: 0,
@@ -819,6 +834,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
+            retry_history: retry_metadata[:retry_history] || [],
             started_at: DateTime.utc_now()
           })
 
@@ -838,7 +854,10 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host,
-          project: issue.project
+          project: issue.project,
+          retry_history: retry_metadata[:retry_history] || [],
+          branch_name: issue.branch_name,
+          issue_url: issue.url
         })
     end
   end
@@ -887,6 +906,17 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     project = pick_retry_project(previous_retry, metadata)
     session_id = pick_retry_session_id(previous_retry, metadata)
+    branch_name = pick_retry_branch_name(previous_retry, metadata)
+    issue_url = pick_retry_issue_url(previous_retry, metadata)
+
+    retry_history =
+      append_retry_history(Map.get(previous_retry, :retry_history) || metadata[:retry_history] || [], %{
+        attempt: next_attempt,
+        due_at_wall_ms: due_at_wall_ms,
+        delay_ms: delay_ms,
+        delay_type: metadata[:delay_type],
+        error: error
+      })
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -912,7 +942,10 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: workspace_path,
             project: project,
-            session_id: session_id
+            session_id: session_id,
+            branch_name: branch_name,
+            issue_url: issue_url,
+            retry_history: retry_history
           })
     }
     |> persist_state()
@@ -927,7 +960,10 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
           session_id: Map.get(retry_entry, :session_id),
-          project: Map.get(retry_entry, :project)
+          project: Map.get(retry_entry, :project),
+          branch_name: Map.get(retry_entry, :branch_name),
+          issue_url: Map.get(retry_entry, :issue_url),
+          retry_history: Map.get(retry_entry, :retry_history, [])
         }
 
         {:ok, attempt, metadata, persist_state(%{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)})}
@@ -1041,7 +1077,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set(issue)) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1108,6 +1144,23 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_session_id(previous_retry, metadata) do
     metadata[:session_id] || Map.get(previous_retry, :session_id)
+  end
+
+  defp pick_retry_branch_name(previous_retry, metadata) do
+    metadata[:branch_name] || Map.get(previous_retry, :branch_name)
+  end
+
+  defp pick_retry_issue_url(previous_retry, metadata) do
+    metadata[:issue_url] || Map.get(previous_retry, :issue_url)
+  end
+
+  defp append_retry_history(history, event) when is_list(history) and is_map(event) do
+    (history ++ [Map.put(event, :scheduled_at, DateTime.utc_now())])
+    |> Enum.take(-@event_history_limit)
+  end
+
+  defp append_retry_history(_history, event) when is_map(event) do
+    append_retry_history([], event)
   end
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
@@ -1274,15 +1327,21 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
+          current_turn_id: Map.get(metadata, :current_turn_id),
+          branch_name: metadata.issue.branch_name,
+          issue_url: metadata.issue.url,
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
+          retry_attempt: Map.get(metadata, :retry_attempt, 0),
+          retry_history: Map.get(metadata, :retry_history, []),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          event_history: Map.get(metadata, :event_history, []),
           mcp_servers: mcp_servers_snapshot(Map.get(metadata, :mcp_servers, %{})),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
@@ -1300,7 +1359,10 @@ defmodule SymphonyElixir.Orchestrator do
           project: Map.get(retry, :project),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
-          session_id: Map.get(retry, :session_id)
+          session_id: Map.get(retry, :session_id),
+          branch_name: Map.get(retry, :branch_name),
+          issue_url: Map.get(retry, :issue_url),
+          retry_history: Map.get(retry, :retry_history, [])
         }
       end)
 
@@ -1545,6 +1607,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
+    codex_update = summarize_codex_update(update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
@@ -1557,9 +1620,11 @@ defmodule SymphonyElixir.Orchestrator do
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
+        last_codex_message: codex_update,
         session_id: session_id_for_update(running_entry.session_id, update),
+        current_turn_id: current_turn_id_for_update(Map.get(running_entry, :current_turn_id), update),
         last_codex_event: event,
+        event_history: append_event_history(Map.get(running_entry, :event_history, []), codex_update, update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1602,7 +1667,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with true <- method in ["codex/event/mcp_startup_update", "mcp_startup_update"],
          %{} = msg <- map_path(payload, ["params", "msg"]) || map_path(payload, [:params, :msg]),
-         server when is_binary(server) <- msg |> map_value(["server", :server]) |> present_string() do
+         server when is_binary(server) <- msg |> map_key_value(["server", :server]) |> present_string() do
       status = mcp_status_state(msg) || "updated"
       detail = mcp_status_detail(msg)
 
@@ -1618,11 +1683,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp mcp_status_state(msg) when is_map(msg) do
-    status = map_value(msg, ["status", :status])
+    status = map_key_value(msg, ["status", :status])
 
     state =
       case status do
-        %{} -> map_value(status, ["state", :state])
+        %{} -> map_key_value(status, ["state", :state])
         value -> value
       end
 
@@ -1630,14 +1695,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp mcp_status_detail(msg) when is_map(msg) do
-    status = map_value(msg, ["status", :status])
+    status = map_key_value(msg, ["status", :status])
 
     [
-      map_value(msg, ["message", :message]),
-      map_value(msg, ["error", :error]),
-      map_value(msg, ["detail", :detail]),
-      map_value(msg, ["details", :details]),
-      map_value(msg, ["reason", :reason]),
+      map_key_value(msg, ["message", :message]),
+      map_key_value(msg, ["error", :error]),
+      map_key_value(msg, ["detail", :detail]),
+      map_key_value(msg, ["details", :details]),
+      map_key_value(msg, ["reason", :reason]),
       status_detail(status)
     ]
     |> Enum.find_value(&present_string/1)
@@ -1645,11 +1710,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp status_detail(status) when is_map(status) do
     [
-      map_value(status, ["message", :message]),
-      map_value(status, ["error", :error]),
-      map_value(status, ["detail", :detail]),
-      map_value(status, ["details", :details]),
-      map_value(status, ["reason", :reason])
+      map_key_value(status, ["message", :message]),
+      map_key_value(status, ["error", :error]),
+      map_key_value(status, ["detail", :detail]),
+      map_key_value(status, ["details", :details]),
+      map_key_value(status, ["reason", :reason])
     ]
     |> Enum.find_value(&present_string/1)
   end
@@ -1668,11 +1733,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp present_string(value) when is_map(value) or is_list(value), do: inspect(value)
   defp present_string(_value), do: nil
 
-  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+  defp map_key_value(map, keys) when is_map(map) and is_list(keys) do
     Enum.find_value(keys, fn key -> Map.get(map, key) end)
   end
 
-  defp map_value(_map, _keys), do: nil
+  defp map_key_value(_map, _keys), do: nil
 
   defp map_path(map, keys) when is_map(map) and is_list(keys) do
     Enum.reduce_while(keys, map, fn key, current ->
@@ -1728,6 +1793,61 @@ defmodule SymphonyElixir.Orchestrator do
       timestamp: update[:timestamp]
     }
   end
+
+  defp append_event_history(history, codex_update, update) when is_list(history) do
+    event = %{
+      at: update[:timestamp],
+      event: update[:event],
+      category: codex_event_category(update),
+      summary: StatusDashboard.humanize_codex_message(codex_update),
+      turn_id: turn_id_from_update(update)
+    }
+
+    (history ++ [event])
+    |> Enum.take(-@event_history_limit)
+  end
+
+  defp append_event_history(_history, codex_update, update), do: append_event_history([], codex_update, update)
+
+  defp current_turn_id_for_update(existing_turn_id, update) do
+    turn_id_from_update(update) || existing_turn_id
+  end
+
+  defp turn_id_from_update(update) when is_map(update) do
+    payload = update[:payload] || update[:raw] || %{}
+
+    map_value(payload, ["params", "turn", "id"]) ||
+      map_value(payload, [:params, :turn, :id]) ||
+      map_value(payload, ["params", "turn_id"]) ||
+      map_value(payload, [:params, :turn_id]) ||
+      map_value(payload, ["turn_id"]) ||
+      map_value(payload, [:turn_id])
+  end
+
+  defp codex_event_category(update) do
+    method = update_method(update)
+    event = update[:event] |> to_string()
+
+    cond do
+      event == "session_started" -> "session"
+      method_contains?(method, ["tokenUsage", "token_count"]) or String.contains?(event, "token_count") -> "tokens"
+      method_contains?(method, ["exec_command", "mcp_tool", "tool_call", "tool"]) -> "tool"
+      method_contains?(method, ["agent_message", "user_message", "reasoning", "message"]) -> "message"
+      method_contains?(method, ["turn/"]) -> "turn"
+      true -> "event"
+    end
+  end
+
+  defp update_method(update) when is_map(update) do
+    payload = update[:payload] || update[:raw] || %{}
+    map_value(payload, ["method"]) || map_value(payload, [:method])
+  end
+
+  defp method_contains?(method, needles) when is_binary(method) and is_list(needles) do
+    Enum.any?(needles, &String.contains?(method, &1))
+  end
+
+  defp method_contains?(_method, _needles), do: false
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
     if is_reference(state.tick_timer_ref) do
@@ -1955,9 +2075,11 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: entry["worker_host"],
       workspace_path: entry["workspace_path"],
       session_id: entry["session_id"],
+      current_turn_id: entry["current_turn_id"],
       last_codex_message: entry["last_codex_message"],
       last_codex_timestamp: decode_datetime(entry["last_codex_timestamp"]),
       last_codex_event: entry["last_codex_event"],
+      event_history: decode_event_history(entry["event_history"]),
       codex_app_server_pid: entry["codex_app_server_pid"],
       codex_input_tokens: integer_value(entry["codex_input_tokens"], 0),
       codex_output_tokens: integer_value(entry["codex_output_tokens"], 0),
@@ -1967,6 +2089,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_last_reported_total_tokens: integer_value(entry["codex_last_reported_total_tokens"], 0),
       turn_count: integer_value(entry["turn_count"], 0),
       retry_attempt: integer_value(entry["retry_attempt"], 0),
+      retry_history: decode_retry_history(entry["retry_history"]),
       restored: entry["restored"] != false,
       started_at: decode_datetime(entry["started_at"]) || DateTime.utc_now()
     }
@@ -1991,7 +2114,10 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: entry["worker_host"],
       workspace_path: entry["workspace_path"],
       session_id: entry["session_id"],
-      project: entry["project"]
+      project: entry["project"],
+      branch_name: entry["branch_name"],
+      issue_url: entry["issue_url"],
+      retry_history: decode_retry_history(entry["retry_history"])
     }
   end
 
@@ -2043,9 +2169,11 @@ defmodule SymphonyElixir.Orchestrator do
          "worker_host" => Map.get(entry, :worker_host),
          "workspace_path" => Map.get(entry, :workspace_path),
          "session_id" => Map.get(entry, :session_id),
+         "current_turn_id" => Map.get(entry, :current_turn_id),
          "last_codex_message" => encode_optional_term(Map.get(entry, :last_codex_message)),
          "last_codex_timestamp" => encode_datetime(Map.get(entry, :last_codex_timestamp)),
          "last_codex_event" => encode_optional_term(Map.get(entry, :last_codex_event)),
+         "event_history" => encode_event_history(Map.get(entry, :event_history)),
          "codex_app_server_pid" => Map.get(entry, :codex_app_server_pid),
          "codex_input_tokens" => Map.get(entry, :codex_input_tokens, 0),
          "codex_output_tokens" => Map.get(entry, :codex_output_tokens, 0),
@@ -2055,6 +2183,7 @@ defmodule SymphonyElixir.Orchestrator do
          "codex_last_reported_total_tokens" => Map.get(entry, :codex_last_reported_total_tokens, 0),
          "turn_count" => Map.get(entry, :turn_count, 0),
          "retry_attempt" => Map.get(entry, :retry_attempt, 0),
+         "retry_history" => encode_retry_history(Map.get(entry, :retry_history)),
          "started_at" => encode_datetime(Map.get(entry, :started_at))
        }}
     end)
@@ -2071,7 +2200,10 @@ defmodule SymphonyElixir.Orchestrator do
          "worker_host" => Map.get(entry, :worker_host),
          "workspace_path" => Map.get(entry, :workspace_path),
          "session_id" => Map.get(entry, :session_id),
-         "project" => Map.get(entry, :project)
+         "project" => Map.get(entry, :project),
+         "branch_name" => Map.get(entry, :branch_name),
+         "issue_url" => Map.get(entry, :issue_url),
+         "retry_history" => encode_retry_history(Map.get(entry, :retry_history))
        }}
     end)
   end
@@ -2099,7 +2231,10 @@ defmodule SymphonyElixir.Orchestrator do
         "worker_host" => Map.get(entry, :worker_host),
         "workspace_path" => Map.get(entry, :workspace_path),
         "session_id" => Map.get(entry, :session_id),
-        "project" => Map.get(entry, :project)
+        "project" => Map.get(entry, :project),
+        "branch_name" => Map.get(entry, :branch_name),
+        "issue_url" => Map.get(entry, :issue_url),
+        "retry_history" => encode_retry_history(Map.get(entry, :retry_history))
       }
     end)
   end
@@ -2129,6 +2264,76 @@ defmodule SymphonyElixir.Orchestrator do
   defp encode_map(value) when is_map(value), do: value
   defp encode_map(_value), do: nil
 
+  defp encode_event_history(history) when is_list(history) do
+    Enum.map(history, fn event ->
+      %{
+        "at" => encode_datetime(event[:at] || event["at"]),
+        "event" => encode_optional_term(event[:event] || event["event"]),
+        "category" => event[:category] || event["category"],
+        "summary" => event[:summary] || event["summary"],
+        "turn_id" => event[:turn_id] || event["turn_id"]
+      }
+    end)
+  end
+
+  defp encode_event_history(_history), do: []
+
+  defp decode_event_history(history) when is_list(history) do
+    history
+    |> Enum.map(fn
+      event when is_map(event) ->
+        %{
+          at: decode_datetime(event["at"]),
+          event: event["event"],
+          category: event["category"],
+          summary: event["summary"],
+          turn_id: event["turn_id"]
+        }
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp decode_event_history(_history), do: []
+
+  defp encode_retry_history(history) when is_list(history) do
+    Enum.map(history, fn event ->
+      %{
+        "attempt" => event[:attempt] || event["attempt"],
+        "scheduled_at" => encode_datetime(event[:scheduled_at] || event["scheduled_at"]),
+        "due_at_wall_ms" => event[:due_at_wall_ms] || event["due_at_wall_ms"],
+        "delay_ms" => event[:delay_ms] || event["delay_ms"],
+        "delay_type" => encode_optional_term(event[:delay_type] || event["delay_type"]),
+        "error" => event[:error] || event["error"]
+      }
+    end)
+  end
+
+  defp encode_retry_history(_history), do: []
+
+  defp decode_retry_history(history) when is_list(history) do
+    history
+    |> Enum.map(fn
+      event when is_map(event) ->
+        %{
+          attempt: integer_value(event["attempt"], 0),
+          scheduled_at: decode_datetime(event["scheduled_at"]),
+          due_at_wall_ms: integer_value(event["due_at_wall_ms"], nil),
+          delay_ms: integer_value(event["delay_ms"], 0),
+          delay_type: event["delay_type"],
+          error: event["error"]
+        }
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp decode_retry_history(_history), do: []
+
   defp encode_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp encode_datetime(_datetime), do: nil
 
@@ -2150,6 +2355,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp string_value(_value), do: nil
+
+  defp map_value(map, [key]) when is_map(map), do: Map.get(map, key)
+
+  defp map_value(map, [key | rest]) when is_map(map) and is_list(rest) do
+    case Map.get(map, key) do
+      %{} = nested -> map_value(nested, rest)
+      _ -> nil
+    end
+  end
+
+  defp map_value(_map, _path), do: nil
 
   defp integer_value(value, _default) when is_integer(value), do: value
 
