@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:now, DateTime.utc_now())
       |> assign(:refresh_notice, nil)
       |> assign(:control_notice, nil)
+      |> assign(:task_filter, "all")
       |> assign(:show_project_form, false)
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
@@ -79,6 +80,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign(:now, DateTime.utc_now())
      |> assign(:control_notice, notice)}
   end
+
+  def handle_event("filter_tasks", %{"filter" => filter}, socket) when filter in ["all", "running", "retrying"] do
+    {:noreply, assign(socket, :task_filter, filter)}
+  end
+
+  def handle_event("filter_tasks", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("show_project_form", _params, socket) do
@@ -157,24 +164,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
+    <section class="dashboard-shell" aria-labelledby="dashboard-title">
+      <header class="dashboard-header">
+        <div class="dashboard-header-main">
           <div>
-            <p class="eyebrow">
-              Orchestrum Observability
-            </p>
-            <h1 class="hero-title">
+            <p class="eyebrow">Orchestrum Observability</p>
+            <h1 id="dashboard-title" class="dashboard-title">
               Operations Dashboard
             </h1>
-            <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Orchestrum runtime.
+            <p class="dashboard-copy">
+              Current state, queue pressure, token usage, and operational controls for this local runtime.
             </p>
           </div>
 
-          <div class="status-stack">
-            <button type="button" class="subtle-button" phx-click="refresh_now">
-              Refresh now
+          <div class="toolbar" aria-label="Dashboard actions">
+            <button
+              type="button"
+              class="toolbar-button"
+              phx-click="refresh_now"
+              phx-disable-with="Refreshing"
+              data-confirm="Queue an immediate poll and reconciliation cycle?"
+              aria-label="Refresh dashboard now"
+              title="Refresh dashboard now"
+            >
+              <span class="button-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" focusable="false">
+                  <path d="M16 6v4h-4" />
+                  <path d="M4 14v-4h4" />
+                  <path d="M14.6 7A5.5 5.5 0 0 0 5 8.2" />
+                  <path d="M5.4 13A5.5 5.5 0 0 0 15 11.8" />
+                </svg>
+              </span>
+              <span>Refresh</span>
             </button>
             <button
               type="button"
@@ -196,7 +217,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               Offline
             </span>
             <%= if @refresh_notice do %>
-              <span class="muted"><%= @refresh_notice %></span>
+              <span class="toolbar-notice" role="status"><%= @refresh_notice %></span>
             <% end %>
             <%= if @control_notice do %>
               <span class="muted"><%= @control_notice %></span>
@@ -205,9 +226,31 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </div>
       </header>
 
+      <nav class="section-nav" aria-label="Dashboard sections">
+        <a class="section-nav-link" href="#overview">
+          <span>Overview</span>
+          <span class="nav-count numeric"><%= task_count(@payload) %></span>
+        </a>
+        <a class="section-nav-link" href="#tasks">
+          <span>Tasks</span>
+          <span class="nav-count numeric"><%= task_count(@payload) %></span>
+        </a>
+        <a class="section-nav-link" href="#runs">
+          <span>Runs</span>
+          <span class="nav-count numeric"><%= running_count(@payload) %></span>
+        </a>
+        <a class="section-nav-link" href="#projects">
+          <span>Projects</span>
+          <span class="nav-count numeric"><%= project_count(@payload) %></span>
+        </a>
+        <a class="section-nav-link" href="#controls">Controls</a>
+        <a class="section-nav-link" href="#settings">Settings</a>
+        <a class="section-nav-link" href="#diagnostics">Diagnostics</a>
+      </nav>
+
       <%= if @payload[:error] do %>
-        <section class="error-card">
-          <h2 class="error-title">
+        <section id="diagnostics" class="ops-panel error-panel" aria-labelledby="diagnostics-title" role="alert">
+          <h2 id="diagnostics-title" class="section-title">
             Snapshot unavailable
           </h2>
           <p class="error-copy">
@@ -215,175 +258,157 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Next poll</p>
-            <p class="metric-value numeric"><%= format_polling(@payload.polling) %></p>
-            <p class="metric-detail">Poll interval <%= format_poll_interval(@payload.polling) %>.</p>
-          </article>
-        </section>
-
-        <section class="section-card">
+        <section id="overview" class="ops-panel" aria-labelledby="overview-title">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Projects</h2>
-              <p class="section-copy">Configured project, workspace, and repository context.</p>
+              <p class="section-kicker">Overview</p>
+              <h2 id="overview-title" class="section-title">Runtime summary</h2>
             </div>
-            <button type="button" class="icon-button" phx-click="show_project_form" aria-label="Add project" title="Add project">
-              [+]
-            </button>
+            <span class="timestamp-pill">Generated <%= format_generated_at(@payload.generated_at) %></span>
           </div>
 
-          <%= if @project_form_notice do %>
-            <p class="form-notice"><%= @project_form_notice %></p>
-          <% end %>
+          <div class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">Running</p>
+              <p class="metric-value numeric"><%= @payload.counts.running %></p>
+              <p class="metric-detail">Active issue sessions.</p>
+            </article>
 
-          <%= if @show_project_form do %>
-            <form id="add-project-form" class="project-form" phx-submit="add_project">
-              <div class="project-form-grid">
-                <label>
-                  <span>Project name</span>
-                  <input name="project[name]" value={@project_form["name"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Linear project slug</span>
-                  <input name="project[project_slug]" value={@project_form["project_slug"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Local directory</span>
-                  <input name="project[workspace_root]" value={@project_form["workspace_root"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Remote repository</span>
-                  <input name="project[repository_path]" value={@project_form["repository_path"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Git name</span>
-                  <input name="project[git_name]" value={@project_form["git_name"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Git username</span>
-                  <input name="project[git_username]" value={@project_form["git_username"] || ""} autocomplete="off" />
-                </label>
-                <label>
-                  <span>Git email</span>
-                  <input name="project[git_email]" value={@project_form["git_email"] || ""} autocomplete="off" />
-                </label>
-              </div>
-              <%= if @project_form_error do %>
-                <p class="form-error"><%= @project_form_error %></p>
-              <% end %>
-              <div class="form-actions">
-                <button type="submit">Add project</button>
-                <button type="button" class="secondary" phx-click="cancel_project_form">Cancel</button>
-              </div>
-            </form>
-          <% end %>
+            <article class="metric-card">
+              <p class="metric-label">Retry queue</p>
+              <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
+              <p class="metric-detail">Waiting for a retry window.</p>
+            </article>
 
-          <%= if @payload.projects == [] do %>
-            <p class="empty-state">No configured projects.</p>
+            <article class="metric-card">
+              <p class="metric-label">Total tokens</p>
+              <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+              <p class="metric-detail numeric">
+                In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
+              </p>
+            </article>
+
+            <article class="metric-card">
+              <p class="metric-label">Runtime</p>
+              <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
+              <p class="metric-detail">Completed plus active runtime.</p>
+            </article>
+
+            <article class="metric-card">
+              <p class="metric-label">Next poll</p>
+              <p class="metric-value numeric"><%= format_polling(@payload.polling) %></p>
+              <p class="metric-detail">Poll interval <%= format_poll_interval(@payload.polling) %>.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="tasks" class="ops-panel" aria-labelledby="tasks-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Tasks</p>
+              <h2 id="tasks-title" class="section-title">Task board</h2>
+              <p class="section-copy">Active and retrying work, filtered without changing orchestrator state.</p>
+            </div>
+
+            <div class="segmented-control" role="group" aria-label="Filter task board">
+              <button
+                type="button"
+                class={task_filter_button_class(@task_filter, "all")}
+                phx-click="filter_tasks"
+                phx-value-filter="all"
+                aria-pressed={to_string(@task_filter == "all")}
+              >
+                All <span class="numeric"><%= task_count(@payload) %></span>
+              </button>
+              <button
+                type="button"
+                class={task_filter_button_class(@task_filter, "running")}
+                phx-click="filter_tasks"
+                phx-value-filter="running"
+                aria-pressed={to_string(@task_filter == "running")}
+              >
+                Running <span class="numeric"><%= running_count(@payload) %></span>
+              </button>
+              <button
+                type="button"
+                class={task_filter_button_class(@task_filter, "retrying")}
+                phx-click="filter_tasks"
+                phx-value-filter="retrying"
+                aria-pressed={to_string(@task_filter == "retrying")}
+              >
+                Retrying <span class="numeric"><%= retrying_count(@payload) %></span>
+              </button>
+            </div>
+          </div>
+
+          <%= if task_filter_empty?(@payload, @task_filter) do %>
+            <p class="empty-state">No <%= task_filter_empty_label(@task_filter) %> tasks.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table project-settings-table">
+              <table class="data-table task-table">
                 <thead>
                   <tr>
+                    <th>Issue</th>
+                    <th>Queue</th>
                     <th>Project</th>
-                    <th>Tracker</th>
-                    <th>Local directory</th>
-                    <th>Remote repository</th>
-                    <th>Git identity</th>
-                    <th>Agent instructions</th>
-                    <th>Controls</th>
+                    <th>Status</th>
+                    <th>Timing</th>
+                    <th>Last signal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={project <- @payload.projects}>
-                    <td><%= project.name || project.id %></td>
-                    <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
-                    <td class="mono"><%= project.workspace_root %></td>
-                    <td class="mono"><%= project.repository_path || "default hook" %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span :for={line <- git_identity_lines(project)} class="mono"><%= line %></span>
-                      </div>
-                    </td>
-                    <td><%= agent_instruction_status(project) %></td>
-                    <td>
-                      <div class="control-row">
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="control"
-                          phx-value-action={project_polling_action(@payload, project)}
-                          phx-value-target={project_control_target(project)}
-                          data-confirm={project_polling_confirm(@payload, project)}
-                          phx-disable-with="Working"
-                          disabled={controls_disabled?(@payload)}
-                        >
-                          <%= project_polling_label(@payload, project) %>
-                        </button>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="control"
-                          phx-value-action="dispatch_project_now"
-                          phx-value-target={project_control_target(project)}
-                          data-confirm={"Dispatch #{project.name || project.id} now?"}
-                          phx-disable-with="Queued"
-                          disabled={controls_disabled?(@payload) or global_polling_paused?(@payload) or project_paused?(@payload, project)}
-                        >
-                          Dispatch now
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                  <%= if @task_filter in ["all", "running"] do %>
+                    <tr :for={entry <- @payload.running}>
+                      <td>
+                        <div class="issue-stack">
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
+                      </td>
+                      <td><span class="queue-label queue-label-running">Running</span></td>
+                      <td><%= project_label(entry.project) %></td>
+                      <td>
+                        <span class={state_badge_class(entry.state)}>
+                          <%= entry.state %>
+                        </span>
+                      </td>
+                      <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                      <td>
+                        <span class="event-text" title={entry.last_message || to_string(entry.last_event || "n/a")}>
+                          <%= entry.last_message || to_string(entry.last_event || "n/a") %>
+                        </span>
+                      </td>
+                    </tr>
+                  <% end %>
+
+                  <%= if @task_filter in ["all", "retrying"] do %>
+                    <tr :for={entry <- @payload.retrying}>
+                      <td>
+                        <div class="issue-stack">
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
+                      </td>
+                      <td><span class="queue-label queue-label-retrying">Retrying</span></td>
+                      <td><%= project_label(entry.project) %></td>
+                      <td><span class="state-badge state-badge-warning">Attempt <%= entry.attempt %></span></td>
+                      <td class="mono numeric"><%= entry.due_at || "n/a" %></td>
+                      <td>
+                        <span class="event-text" title={entry.error || "n/a"}><%= entry.error || "n/a" %></span>
+                      </td>
+                    </tr>
+                  <% end %>
                 </tbody>
               </table>
             </div>
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section id="mcp-servers" class="ops-panel" aria-labelledby="mcp-servers-title">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
-            </div>
-          </div>
-
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">MCP servers</h2>
+              <p class="section-kicker">Diagnostics</p>
+              <h2 id="mcp-servers-title" class="section-title">MCP servers</h2>
               <p class="section-copy">Configured MCP servers reported by active Codex sessions.</p>
             </div>
           </div>
@@ -425,6 +450,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           class="subtle-button"
                           data-label={mcp_action_label(server.action)}
                           data-copy={mcp_action_copy(server)}
+                          aria-label={"Copy #{mcp_action_label(server.action)} instructions for #{server.name}"}
+                          title={"Copy #{mcp_action_label(server.action)} instructions for #{server.name}"}
                           onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                         >
                           <%= mcp_action_label(server.action) %>
@@ -440,11 +467,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section id="runs" class="ops-panel" aria-labelledby="runs-title">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
+              <p class="section-kicker">Runs</p>
+              <h2 id="runs-title" class="section-title">Running sessions</h2>
+              <p class="section-copy">Live agent runs with workspace, event, and token context.</p>
             </div>
           </div>
 
@@ -469,6 +497,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>Project</th>
                     <th>State</th>
+                    <th>Workspace</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
                     <th>Codex update</th>
@@ -492,6 +521,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </span>
                     </td>
                     <td>
+                      <div class="detail-stack">
+                        <span class="mono path-text"><%= entry.workspace_path || "default workspace" %></span>
+                        <span class="muted"><%= entry.worker_host || "local worker" %></span>
+                      </div>
+                    </td>
+                    <td>
                       <div class="session-stack">
                         <%= if entry.session_id do %>
                           <button
@@ -499,6 +534,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                             class="subtle-button"
                             data-label="Copy ID"
                             data-copy={entry.session_id}
+                            aria-label={"Copy session ID for #{entry.issue_identifier}"}
+                            title={"Copy session ID for #{entry.issue_identifier}"}
                             onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                           >
                             Copy ID
@@ -518,7 +555,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="muted event-meta">
                           <%= entry.last_event || "n/a" %>
                           <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
+                            - <span class="mono numeric"><%= entry.last_event_at %></span>
                           <% end %>
                         </span>
                       </div>
@@ -567,11 +604,146 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section id="projects" class="ops-panel" aria-labelledby="projects-title">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
+              <p class="section-kicker">Projects</p>
+              <h2 id="projects-title" class="section-title">Project command center</h2>
+              <p class="section-copy">Configured project, workspace, and repository context.</p>
+            </div>
+            <button
+              type="button"
+              class="icon-button"
+              phx-click="show_project_form"
+              aria-label="Add project"
+              title="Add project"
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+          </div>
+
+          <%= if @project_form_notice do %>
+            <p class="form-notice" role="status"><%= @project_form_notice %></p>
+          <% end %>
+
+          <%= if @show_project_form do %>
+            <form
+              id="add-project-form"
+              class="project-form"
+              phx-submit="add_project"
+              role="dialog"
+              aria-label="Add project to workflow"
+              data-confirm="Add this project to WORKFLOW.md?"
+            >
+              <div class="project-form-grid">
+                <label>
+                  <span>Project name</span>
+                  <input name="project[name]" value={@project_form["name"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Linear project slug</span>
+                  <input name="project[project_slug]" value={@project_form["project_slug"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Local directory</span>
+                  <input name="project[workspace_root]" value={@project_form["workspace_root"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Remote repository</span>
+                  <input name="project[repository_path]" value={@project_form["repository_path"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git name</span>
+                  <input name="project[git_name]" value={@project_form["git_name"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git username</span>
+                  <input name="project[git_username]" value={@project_form["git_username"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git email</span>
+                  <input name="project[git_email]" value={@project_form["git_email"] || ""} autocomplete="off" />
+                </label>
+              </div>
+              <%= if @project_form_error do %>
+                <p class="form-error" role="alert"><%= @project_form_error %></p>
+              <% end %>
+              <div class="form-actions">
+                <button type="submit" phx-disable-with="Adding project">Add project</button>
+                <button type="button" class="secondary" phx-click="cancel_project_form">Cancel</button>
+              </div>
+            </form>
+          <% end %>
+
+          <%= if @payload.projects == [] do %>
+            <p class="empty-state">No configured projects.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table project-settings-table">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Tracker</th>
+                    <th>Local directory</th>
+                    <th>Remote repository</th>
+                    <th>Git identity</th>
+                    <th>Agent instructions</th>
+                    <th>Controls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={project <- @payload.projects}>
+                    <td><%= project.name || project.id %></td>
+                    <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
+                    <td class="mono path-text"><%= project.workspace_root %></td>
+                    <td class="mono path-text"><%= project.repository_path || "default hook" %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span :for={line <- git_identity_lines(project)} class="mono"><%= line %></span>
+                      </div>
+                    </td>
+                    <td><%= agent_instruction_status(project) %></td>
+                    <td>
+                      <div class="control-row">
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="control"
+                          phx-value-action={project_polling_action(@payload, project)}
+                          phx-value-target={project_control_target(project)}
+                          data-confirm={project_polling_confirm(@payload, project)}
+                          phx-disable-with="Working"
+                          disabled={controls_disabled?(@payload)}
+                        >
+                          <%= project_polling_label(@payload, project) %>
+                        </button>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="control"
+                          phx-value-action="dispatch_project_now"
+                          phx-value-target={project_control_target(project)}
+                          data-confirm={"Dispatch #{project.name || project.id} now?"}
+                          phx-disable-with="Queued"
+                          disabled={controls_disabled?(@payload) or global_polling_paused?(@payload) or project_paused?(@payload, project)}
+                        >
+                          Dispatch now
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section id="retry-controls" class="ops-panel" aria-labelledby="retry-controls-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Retries</p>
+              <h2 id="retry-controls-title" class="section-title">Retry queue controls</h2>
+              <p class="section-copy">Backoff entries that can be retried now or cleared.</p>
             </div>
           </div>
 
@@ -579,7 +751,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No issues are currently backing off.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
+              <table class="data-table" style="min-width: 720px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
@@ -638,10 +810,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
 
         <%= if @payload.claimed != [] do %>
-          <section class="section-card">
+          <section id="claimed-controls" class="ops-panel" aria-labelledby="claimed-controls-title">
             <div class="section-header">
               <div>
-                <h2 class="section-title">Claimed issues</h2>
+                <p class="section-kicker">Claims</p>
+                <h2 id="claimed-controls-title" class="section-title">Claimed issues</h2>
                 <p class="section-copy">Claims with no active run or retry entry.</p>
               </div>
             </div>
@@ -677,6 +850,103 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </section>
         <% end %>
+
+        <section id="controls" class="ops-panel" aria-labelledby="controls-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Controls</p>
+              <h2 id="controls-title" class="section-title">Operator controls</h2>
+              <p class="section-copy">Manual actions that change runtime or workflow state.</p>
+            </div>
+          </div>
+
+          <div class="control-grid">
+            <div class="control-row">
+              <div>
+                <h3 class="control-title">Queue refresh</h3>
+                <p class="control-copy">Poll Linear and reconcile current running state.</p>
+              </div>
+              <button
+                type="button"
+                class="toolbar-button"
+                phx-click="refresh_now"
+                phx-disable-with="Refreshing"
+                data-confirm="Queue an immediate poll and reconciliation cycle?"
+                aria-label="Queue manual refresh"
+                title="Queue manual refresh"
+              >
+                <span class="button-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" focusable="false">
+                    <path d="M16 6v4h-4" />
+                    <path d="M4 14v-4h4" />
+                    <path d="M14.6 7A5.5 5.5 0 0 0 5 8.2" />
+                    <path d="M5.4 13A5.5 5.5 0 0 0 15 11.8" />
+                  </svg>
+                </span>
+                <span>Refresh</span>
+              </button>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <h3 class="control-title">Add project</h3>
+                <p class="control-copy">Open the workflow-backed project form.</p>
+              </div>
+              <button
+                type="button"
+                class="toolbar-button secondary"
+                phx-click="show_project_form"
+                aria-label="Open add project form"
+                title="Open add project form"
+              >
+                <span class="button-icon" aria-hidden="true">+</span>
+                <span>Add project</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings" class="ops-panel" aria-labelledby="settings-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Settings</p>
+              <h2 id="settings-title" class="section-title">Runtime settings</h2>
+              <p class="section-copy">Read-only workflow values that shape dashboard behavior.</p>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <div :for={setting <- settings_rows(@payload)} class="setting-row">
+              <span class="setting-label"><%= setting.label %></span>
+              <span class="setting-value"><%= setting.value %></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="diagnostics" class="ops-panel" aria-labelledby="diagnostics-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Diagnostics</p>
+              <h2 id="diagnostics-title" class="section-title">Diagnostics</h2>
+              <p class="section-copy">Raw values and API entry points for debugging the current runtime.</p>
+            </div>
+            <div class="link-group" aria-label="Diagnostic API links">
+              <a href="/api/v1/state">State JSON</a>
+              <a href="/api/v1/refresh">Refresh endpoint</a>
+            </div>
+          </div>
+
+          <div class="diagnostics-grid">
+            <div>
+              <h3 class="control-title">Rate limits</h3>
+              <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+            </div>
+            <div>
+              <h3 class="control-title">Polling</h3>
+              <pre class="code-panel"><%= pretty_value(@payload.polling) %></pre>
+            </div>
+          </div>
+        </section>
       <% end %>
     </section>
     """
@@ -693,6 +963,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || Config.snapshot_timeout_ms()
   end
+
+  defp task_count(%{running: running, retrying: retrying}), do: length(running) + length(retrying)
+  defp task_count(_payload), do: 0
+
+  defp running_count(%{running: running}), do: length(running)
+  defp running_count(_payload), do: 0
+
+  defp retrying_count(%{retrying: retrying}), do: length(retrying)
+  defp retrying_count(_payload), do: 0
+
+  defp project_count(%{projects: projects}), do: length(projects)
+  defp project_count(_payload), do: 0
+
+  defp task_filter_button_class(current, target) do
+    if current == target do
+      "segmented-button segmented-button-active"
+    else
+      "segmented-button"
+    end
+  end
+
+  defp task_filter_empty?(payload, "running"), do: running_count(payload) == 0
+  defp task_filter_empty?(payload, "retrying"), do: retrying_count(payload) == 0
+  defp task_filter_empty?(payload, _filter), do: task_count(payload) == 0
+
+  defp task_filter_empty_label("running"), do: "running"
+  defp task_filter_empty_label("retrying"), do: "retrying"
+  defp task_filter_empty_label(_filter), do: "active or retrying"
+
+  defp settings_rows(payload) do
+    settings = Config.settings!()
+
+    [
+      %{label: "Tracker", value: settings.tracker.kind || "n/a"},
+      %{label: "Project slug", value: settings.tracker.project_slug || "n/a"},
+      %{label: "Active states", value: Enum.join(settings.tracker.active_states || [], ", ")},
+      %{label: "Terminal states", value: Enum.join(settings.tracker.terminal_states || [], ", ")},
+      %{label: "Polling interval", value: format_poll_interval(payload.polling)},
+      %{label: "Snapshot timeout", value: "#{settings.observability.snapshot_timeout_ms} ms"},
+      %{label: "Workspace root", value: settings.workspace.root},
+      %{label: "Agent capacity", value: Integer.to_string(settings.agent.max_concurrent_agents)},
+      %{label: "Max turns", value: Integer.to_string(settings.agent.max_turns)},
+      %{label: "Server", value: server_setting(settings.server)}
+    ]
+  end
+
+  defp server_setting(%{enabled: false}), do: "disabled"
+  defp server_setting(%{host: host, port: nil}), do: "#{host}:4000"
+  defp server_setting(%{host: host, port: port}), do: "#{host}:#{port}"
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
@@ -725,6 +1044,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp format_poll_interval(%{poll_interval_ms: ms}) when is_integer(ms), do: format_runtime_seconds(ms / 1_000)
   defp format_poll_interval(_polling), do: "n/a"
+
+  defp format_generated_at(generated_at) when is_binary(generated_at), do: generated_at
+  defp format_generated_at(_generated_at), do: "n/a"
 
   defp project_label(nil), do: "n/a"
   defp project_label(%{name: name}) when is_binary(name) and name != "", do: name
