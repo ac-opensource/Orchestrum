@@ -211,6 +211,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, push_patch(socket, to: task_board_path(%{}, socket.assigns.selected_task_issue_identifier))}
   end
 
+  def handle_event("filter_task_search", %{"query" => query}, socket) do
+    filters =
+      socket.assigns.task_board_filters
+      |> Map.put(:query, query || "")
+      |> Presenter.normalize_task_board_filters()
+
+    {:noreply, push_patch(socket, to: task_board_path(filters, socket.assigns.selected_task_issue_identifier))}
+  end
+
+  def handle_event("filter_task_search", _params, socket) do
+    filters = socket.assigns.task_board_filters
+    selected_identifier = socket.assigns.selected_task_issue_identifier
+
+    {:noreply, push_patch(socket, to: task_board_path(filters, selected_identifier))}
+  end
+
   @impl true
   def handle_event("select_task_issue", %{"identifier" => identifier}, socket) do
     {:noreply, push_patch(socket, to: task_board_path(socket.assigns.task_board_filters, identifier))}
@@ -389,25 +405,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <h1 id="dashboard-title" class="dashboard-title">
               Operations Command Center
             </h1>
-            <p class="dashboard-copy">
-              Current state, queue pressure, token usage, and operational controls for this local runtime.
-            </p>
           </div>
 
           <form
+            id="dashboard-search"
             class="dashboard-search"
             action={dashboard_project_path(dashboard_view_path("tasks"), @selected_project_id)}
             method="get"
             role="search"
+            phx-change="filter_task_search"
           >
             <span class="material-symbols-outlined" aria-hidden="true">search</span>
             <input :if={@selected_project_id != "all"} type="hidden" name="project" value={@selected_project_id} />
             <input
-              name="task_board[query]"
               type="search"
-              autocomplete="off"
-              aria-label="Search operational logs"
+              name="query"
+              value={task_board_query(@payload)}
               placeholder="Search operational logs..."
+              aria-label="Search operational logs"
+              phx-debounce="300"
+              autocomplete="off"
             />
           </form>
 
@@ -714,116 +731,153 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
 
           <form id="task-board-filters" class="task-filter-form" phx-change="filter_task_board">
-            <label>
-              <span>Project</span>
-              <select name="task_board[project]">
-                <option value="" selected={@payload.task_board.filters.project == ""}>All projects</option>
-                <option
-                  :for={option <- @payload.task_board.options.projects}
-                  value={option.value}
-                  selected={@payload.task_board.filters.project == option.value}
-                ><%= option.label %></option>
-              </select>
-            </label>
+            <div class="task-filter-fields">
+              <label>
+                <span>Project</span>
+                <select name="task_board[project]">
+                  <option value="" selected={@payload.task_board.filters.project == ""}>All projects</option>
+                  <option
+                    :for={option <- @payload.task_board.options.projects}
+                    value={option.value}
+                    selected={@payload.task_board.filters.project == option.value}
+                  ><%= option.label %></option>
+                </select>
+              </label>
 
-            <label>
-              <span>State</span>
-              <select name="task_board[state]">
-                <option value="" selected={@payload.task_board.filters.state == ""}>All states</option>
-                <option
-                  :for={option <- @payload.task_board.options.states}
-                  value={option.value}
-                  selected={@payload.task_board.filters.state == option.value}
-                ><%= option.label %></option>
-              </select>
-            </label>
+              <label>
+                <span>State</span>
+                <select name="task_board[state]">
+                  <option value="" selected={@payload.task_board.filters.state == ""}>All states</option>
+                  <option
+                    :for={option <- @payload.task_board.options.states}
+                    value={option.value}
+                    selected={@payload.task_board.filters.state == option.value}
+                  ><%= option.label %></option>
+                </select>
+              </label>
 
-            <label>
-              <span>Label</span>
-              <select name="task_board[label]">
-                <option value="" selected={@payload.task_board.filters.label == ""}>All labels</option>
-                <option
-                  :for={option <- @payload.task_board.options.labels}
-                  value={option.value}
-                  selected={@payload.task_board.filters.label == option.value}
-                ><%= option.label %></option>
-              </select>
-            </label>
+              <label>
+                <span>Label</span>
+                <select name="task_board[label]">
+                  <option value="" selected={@payload.task_board.filters.label == ""}>All labels</option>
+                  <option
+                    :for={option <- @payload.task_board.options.labels}
+                    value={option.value}
+                    selected={@payload.task_board.filters.label == option.value}
+                  ><%= option.label %></option>
+                </select>
+              </label>
 
-            <label>
-              <span>Status</span>
-              <select name="task_board[status]">
-                <option
-                  :for={option <- @payload.task_board.options.statuses}
-                  value={option.value}
-                  selected={@payload.task_board.filters.status == option.value}
-                ><%= option.label %></option>
-              </select>
-            </label>
+              <label>
+                <span>Status</span>
+                <select name="task_board[status]">
+                  <option
+                    :for={option <- @payload.task_board.options.statuses}
+                    value={option.value}
+                    selected={@payload.task_board.filters.status == option.value}
+                  ><%= option.label %></option>
+                </select>
+              </label>
 
-            <label class="task-filter-query">
-              <span>Search</span>
-              <input
-                type="search"
-                name="task_board[query]"
-                value={@payload.task_board.filters.query}
-                phx-debounce="300"
-                autocomplete="off"
-              />
-            </label>
+              <label class="task-filter-query">
+                <span>Search</span>
+                <input
+                  type="search"
+                  name="task_board[query]"
+                  value={@payload.task_board.filters.query}
+                  phx-debounce="300"
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+
+            <div class="task-filter-summary">
+              <span class="mono">ACTIVE TASKS: <strong><%= @payload.task_board.filtered_count %></strong></span>
+              <span class="task-filter-action">
+                <span class="material-symbols-outlined" aria-hidden="true">filter_list</span>
+                Filters
+              </span>
+            </div>
           </form>
 
           <div class="task-board-layout">
-            <div class="task-board-groups">
-              <section :for={group <- @payload.task_board.groups} class="task-group">
-                <header class="task-group-header">
-                  <h3><%= group.title %></h3>
-                  <span class="numeric"><%= group.count %></span>
-                </header>
+            <div class="task-table-panel">
+              <table class="task-board-table">
+                <thead>
+                  <tr>
+                    <th>Task ID</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Project</th>
+                    <th>Signal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <%= for group <- @payload.task_board.groups do %>
+                    <tr class="task-group-divider">
+                      <th colspan="5">
+                        <span><%= group.title %></span>
+                        <span class="numeric"><%= group.count %></span>
+                      </th>
+                    </tr>
 
-                <%= if group.issues == [] do %>
-                  <p class="empty-state">No issues.</p>
-                <% else %>
-                  <article
-                    :for={issue <- group.issues}
-                    class={[
-                      "task-issue-row",
-                      selected_task_issue?(@selected_task_issue_identifier, issue) && "task-issue-row-selected"
-                    ]}
-                  >
-                    <div class="task-issue-topline">
-                      <button
-                        type="button"
-                        class="task-issue-button"
-                        phx-click="select_task_issue"
-                        phx-value-identifier={issue.issue_identifier}
+                    <%= if group.issues == [] do %>
+                      <tr class="task-board-table-row">
+                        <td colspan="5"><p class="empty-state">No issues.</p></td>
+                      </tr>
+                    <% else %>
+                      <tr
+                        :for={issue <- group.issues}
+                        class={[
+                          "task-board-table-row",
+                          selected_task_issue?(@selected_task_issue_identifier, issue) && "task-issue-row-selected"
+                        ]}
                       >
-                        <span class="issue-id"><%= issue.issue_identifier %></span>
-                        <span><%= issue.title %></span>
-                      </button>
-                      <span class={state_badge_class(issue.state)}>
-                        <%= issue.state %>
-                      </span>
-                    </div>
-
-                    <div class="task-issue-meta">
-                      <span><%= issue.project_label %></span>
-                      <span><%= assignee_label(issue.assignee) %></span>
-                      <span>Age <%= issue.age_label %></span>
-                      <span>Updated <%= issue.updated_label %></span>
-                      <span><%= issue.relations.label %></span>
-                      <span class={run_status_class(issue.run_status.status)}>
-                        <%= issue.run_status.label %>
-                      </span>
-                    </div>
-
-                    <div class="task-labels">
-                      <span :for={label <- issue.labels} class="task-label"><%= label %></span>
-                      <span :if={issue.labels == []} class="muted">No labels</span>
-                    </div>
-                  </article>
-                <% end %>
-              </section>
+                        <td>
+                          <button
+                            type="button"
+                            class="task-issue-button"
+                            phx-click="select_task_issue"
+                            phx-value-identifier={issue.issue_identifier}
+                          >
+                            <span class="issue-id"><%= issue.issue_identifier %></span>
+                            <span class="task-selected-chip" :if={selected_task_issue?(@selected_task_issue_identifier, issue)}>Selected</span>
+                          </button>
+                        </td>
+                        <td>
+                          <div class="task-agent-stack">
+                            <span><%= issue.title %></span>
+                            <span><%= assignee_label(issue.assignee) %> · Age <%= issue.age_label %></span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class={state_badge_class(issue.state)}>
+                            <%= issue.state %>
+                          </span>
+                        </td>
+                        <td>
+                          <div class="task-agent-stack">
+                            <span><%= issue.project_label %></span>
+                            <span>Updated <%= issue.updated_label %></span>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="task-signal-stack">
+                            <span class={run_status_class(issue.run_status.status)}>
+                              <%= issue.run_status.label %>
+                            </span>
+                            <span><%= issue.relations.label %></span>
+                            <span class="task-labels">
+                              <span :for={label <- issue.labels} class="task-label"><%= label %></span>
+                              <span :if={issue.labels == []} class="muted">No labels</span>
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    <% end %>
+                  <% end %>
+                </tbody>
+              </table>
             </div>
 
             <aside class="task-detail-panel">
@@ -832,6 +886,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <div>
                     <p class="eyebrow"><%= @selected_task_issue.issue_identifier %></p>
                     <h3><%= @selected_task_issue.title %></h3>
+                    <p class="task-trace-id mono">Trace <%= @selected_task_issue.issue_identifier %></p>
                   </div>
                   <button type="button" class="subtle-button" phx-click="clear_task_issue">Close</button>
                 </div>
@@ -2295,6 +2350,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp task_board_count(%{task_board: %{filtered_count: count}}) when is_integer(count), do: count
   defp task_board_count(_payload), do: 0
+
+  defp task_board_query(%{task_board: %{filters: %{query: query}}}) when is_binary(query), do: query
+  defp task_board_query(_payload), do: ""
 
   defp visible_task_count(payload, project_id),
     do: visible_running_count(payload, project_id) + visible_retrying_count(payload, project_id)

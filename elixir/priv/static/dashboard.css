@@ -4,12 +4,13 @@
   --surface: #1a1d23;
   --surface-muted: #111317;
   --surface-strong: #2d333d;
-  --surface-raised: #242832;
+  --surface-raised: #1f232b;
   --terminal: #050607;
   --ink: #e2e2e8;
   --muted: #9aa8ad;
+  --muted-strong: #b9cacb;
   --line: rgba(255, 255, 255, 0.14);
-  --line-soft: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.075);
   --line-strong: rgba(255, 255, 255, 0.22);
   --accent: #00f0ff;
   --accent-ink: #00dbe9;
@@ -25,6 +26,7 @@
   --danger-soft: rgba(255, 107, 107, 0.12);
   --focus: #00f0ff;
   --rail-width: 16rem;
+  --panel-gradient: linear-gradient(180deg, #1a1d23 0%, #111317 100%);
   --topbar-height: 3.5rem;
   --shadow-sm: 0 0 0 1px rgba(0, 240, 255, 0.02), 0 16px 40px rgba(0, 0, 0, 0.28);
   --shadow-glow: 0 0 15px -3px rgba(0, 240, 255, 0.22), 0 0 6px -2px rgba(0, 240, 255, 0.14);
@@ -47,6 +49,23 @@ body {
   font-family: "Inter", "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
   line-height: 1.45;
   scrollbar-color: var(--outline-variant, #3b494b) var(--page);
+}
+
+.material-symbols-outlined {
+  direction: ltr;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-family: "Material Symbols Outlined";
+  font-feature-settings: "liga";
+  font-size: 1.25rem;
+  font-style: normal;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+  font-weight: normal;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
 }
 
 a {
@@ -255,6 +274,47 @@ pre,
   gap: 1.1rem;
 }
 
+.dashboard-header-title {
+  flex: 0 1 24rem;
+  min-width: 10rem;
+}
+
+.dashboard-search {
+  position: relative;
+  display: flex;
+  flex: 1 1 18rem;
+  max-width: 28rem;
+  min-width: 12rem;
+  align-items: center;
+}
+
+.dashboard-search .material-symbols-outlined {
+  position: absolute;
+  left: 0.75rem;
+  color: var(--muted);
+  font-size: 1rem;
+  pointer-events: none;
+}
+
+.dashboard-search input {
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  padding: 0.35rem 0.8rem 0.35rem 2.25rem;
+  text-transform: uppercase;
+}
+
+.dashboard-search input::placeholder {
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
 .command-rail {
   position: fixed;
   inset: 0 auto 0 0;
@@ -311,6 +371,11 @@ pre,
   color: #94a3b8;
   font-size: 0.82rem;
   font-weight: 700;
+}
+
+.rail-footer .material-symbols-outlined {
+  color: currentColor;
+  font-size: 1.05rem;
 }
 
 .rail-footer a:hover {
@@ -763,13 +828,21 @@ pre,
 
 .task-filter-form {
   display: grid;
-  gap: 0.7rem;
-  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
   margin: 1rem 0;
   padding: 1rem;
   border: 1px solid var(--line-soft);
   border-radius: 0.25rem;
   background: #111317;
+  box-shadow: var(--shadow-sm);
+}
+
+.task-filter-fields {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
 }
 
 .task-filter-form label {
@@ -777,33 +850,123 @@ pre,
   gap: 0.3rem;
   min-width: 0;
   color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .task-filter-form select,
 .task-filter-form input {
   width: 100%;
-  min-height: 2.35rem;
+  min-height: 2rem;
   border: 1px solid var(--line);
   border-radius: 0.25rem;
   background: #0f1115;
   color: var(--ink);
   font: inherit;
-  font-size: 0.88rem;
-  padding: 0.45rem 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+}
+
+.task-filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  min-height: 2rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.task-filter-summary strong {
+  color: var(--accent);
+}
+
+.task-filter-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.85rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.task-filter-action .material-symbols-outlined {
+  font-size: 1rem;
 }
 
 .task-board-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.4fr);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.42fr);
   gap: 1rem;
+  align-items: start;
 }
 
 .task-board-groups {
   display: grid;
   gap: 0.7rem;
   min-width: 0;
+}
+
+.task-table-panel {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  box-shadow: var(--shadow-sm);
+}
+
+.task-board-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.task-board-table th {
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  background: #1a1d23;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.task-board-table td {
+  padding: 0.85rem 0.9rem;
+  border-top: 1px solid var(--line-soft);
+  vertical-align: top;
+  font-size: 0.84rem;
+}
+
+.task-board-table tbody tr:first-child td {
+  border-top: 0;
+}
+
+.task-board-table-row:hover td {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.task-group-divider th {
+  padding: 0.62rem 0.9rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--surface-raised) 82%, black);
+  color: var(--muted-strong);
+}
+
+.task-group-divider th span + span {
+  float: right;
 }
 
 .task-group {
@@ -856,13 +1019,15 @@ pre,
 }
 
 .task-issue-button {
-  display: grid;
-  gap: 0.16rem;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
   min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--ink);
+  color: var(--accent);
   font-weight: 700;
   text-align: left;
 }
@@ -872,6 +1037,36 @@ pre,
   border-color: transparent;
   box-shadow: none;
   color: var(--accent-ink);
+}
+
+.task-selected-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.2rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.64rem;
+  text-transform: uppercase;
+}
+
+.task-agent-stack,
+.task-signal-stack {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.task-agent-stack span:first-child {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.task-agent-stack span + span,
+.task-signal-stack span + span {
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 .task-issue-meta {
@@ -907,10 +1102,12 @@ pre,
   top: calc(var(--topbar-height) + 1rem);
   align-self: start;
   min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--line-soft);
   border-radius: 0.25rem;
   background: #1a1d23;
-  padding: 0.85rem;
+  padding: 0;
+  box-shadow: var(--shadow-sm);
 }
 
 .task-detail-header {
@@ -918,6 +1115,9 @@ pre,
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
+  padding: 0.95rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
 }
 
 .task-detail-header h3 {
@@ -926,10 +1126,18 @@ pre,
   line-height: 1.25;
 }
 
+.task-trace-id {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
 .task-detail-list {
   display: grid;
   gap: 0.65rem;
-  margin: 0.9rem 0 0;
+  margin: 0;
+  padding: 0.95rem;
 }
 
 .task-detail-list div {
@@ -954,7 +1162,9 @@ pre,
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: 0.9rem;
+  margin: 0;
+  padding: 0.95rem;
+  border-top: 1px solid var(--line-soft);
 }
 
 .project-toolbar {
@@ -3055,9 +3265,15 @@ pre,
   }
 
   .task-filter-form,
+  .task-filter-fields,
   .task-board-layout,
   .workflow-builder {
     grid-template-columns: 1fr;
+  }
+
+  .task-filter-summary {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .workflow-library,
