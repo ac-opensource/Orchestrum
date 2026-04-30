@@ -879,6 +879,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Agent Config"
     assert html =~ "Workflow Builder"
     assert html =~ "Audit Logs"
+    assert html =~ "Runtime audit stream"
+    assert html =~ "ORCHESTRUM_AUDIT_STREAM"
+    assert html =~ "Inspector: MT-HTTP"
+    assert html =~ "Token dynamics"
+    assert html =~ "Bottleneck analysis"
+    assert html =~ "Worker node health"
     assert html =~ "Task board"
     assert html =~ "Project command center"
     assert html =~ "Operator controls"
@@ -1053,7 +1059,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           {"/projects", "projects", "Project command center"},
           {"/controls", "controls", "Operator controls"},
           {"/settings", "settings", "Runtime settings"},
-          {"/diagnostics", "diagnostics", "Diagnostics"}
+          {"/diagnostics", "diagnostics", "Runtime audit stream"}
         ] do
       {:ok, _view, html} = live(build_conn(), path)
 
