@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.{Config, ProjectRegistry}
+  alias SymphonyElixir.{Config, ProjectRegistry, Tracker}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -20,6 +20,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
       |> assign(:project_form_notice, nil)
+      |> assign(:ticket_reply_errors, %{})
+      |> assign(:ticket_reply_notices, %{})
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -71,6 +73,37 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_event("cancel_project_form", _params, socket) do
     {:noreply, reset_project_form(socket)}
+  end
+
+  @impl true
+  def handle_event("reply_to_ticket", %{"issue_id" => issue_id, "body" => body}, socket) do
+    issue_id = normalize_reply_issue_id(issue_id)
+    body = normalize_reply_body(body)
+
+    cond do
+      issue_id == "" ->
+        {:noreply, put_ticket_reply_error(socket, issue_id, "Ticket id is required.")}
+
+      body == "" ->
+        {:noreply, put_ticket_reply_error(socket, issue_id, "Reply body is required.")}
+
+      true ->
+        case Tracker.create_comment(issue_id, body) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:payload, load_payload())
+             |> assign(:now, DateTime.utc_now())
+             |> put_ticket_reply_notice(issue_id, "Reply sent")}
+
+          {:error, reason} ->
+            {:noreply, put_ticket_reply_error(socket, issue_id, "Could not send reply: #{format_tracker_error(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("reply_to_ticket", _params, socket) do
+    {:noreply, put_ticket_reply_error(socket, "", "Ticket id and reply body are required.")}
   end
 
   @impl true
@@ -278,6 +311,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col style="width: 8.5rem;" />
                   <col />
                   <col style="width: 10rem;" />
+                  <col style="width: 16rem;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -288,6 +322,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Runtime / turns</th>
                     <th>Codex update</th>
                     <th>Tokens</th>
+                    <th>Reply</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -341,6 +376,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
+                    </td>
+                    <td class="ticket-reply-cell">
+                      <%= if can_reply_to_ticket?(entry) do %>
+                        <form id={"ticket-reply-form-#{entry.issue_id}"} class="ticket-reply-form" phx-submit="reply_to_ticket">
+                          <input type="hidden" name="issue_id" value={entry.issue_id} />
+                          <textarea name="body" rows="2" aria-label={"Reply to #{entry.issue_identifier}"} placeholder="Reply..."></textarea>
+                          <button type="submit" class="subtle-button">Reply</button>
+                          <%= if notice = ticket_reply_notice(@ticket_reply_notices, entry.issue_id) do %>
+                            <p class="form-notice"><%= notice %></p>
+                          <% end %>
+                          <%= if error = ticket_reply_error(@ticket_reply_errors, entry.issue_id) do %>
+                            <p class="form-error"><%= error %></p>
+                          <% end %>
+                        </form>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
                     </td>
                   </tr>
                 </tbody>
@@ -467,6 +519,51 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_error({:workflow_write_failed, _reason}), do: "Could not update WORKFLOW.md."
   defp project_error({:workflow_reload_failed, _reason}), do: "Could not reload WORKFLOW.md."
   defp project_error(_reason), do: "Could not add project."
+
+  defp put_ticket_reply_notice(socket, issue_id, message) do
+    issue_id = normalize_reply_issue_id(issue_id)
+
+    socket
+    |> assign(:ticket_reply_notices, Map.put(socket.assigns.ticket_reply_notices, issue_id, message))
+    |> assign(:ticket_reply_errors, Map.delete(socket.assigns.ticket_reply_errors, issue_id))
+  end
+
+  defp put_ticket_reply_error(socket, issue_id, message) do
+    issue_id = normalize_reply_issue_id(issue_id)
+
+    socket
+    |> assign(:ticket_reply_errors, Map.put(socket.assigns.ticket_reply_errors, issue_id, message))
+    |> assign(:ticket_reply_notices, Map.delete(socket.assigns.ticket_reply_notices, issue_id))
+  end
+
+  defp ticket_reply_notice(notices, issue_id), do: Map.get(notices, normalize_reply_issue_id(issue_id))
+  defp ticket_reply_error(errors, issue_id), do: Map.get(errors, normalize_reply_issue_id(issue_id))
+
+  defp normalize_reply_issue_id(nil), do: ""
+  defp normalize_reply_issue_id(issue_id), do: issue_id |> to_string() |> String.trim()
+
+  defp normalize_reply_body(nil), do: ""
+  defp normalize_reply_body(body), do: body |> to_string() |> String.trim()
+
+  defp can_reply_to_ticket?(%{issue_id: issue_id, state: state}) when is_binary(issue_id) do
+    String.trim(issue_id) != "" and human_review_state?(state)
+  end
+
+  defp can_reply_to_ticket?(_entry), do: false
+
+  defp human_review_state?(state) do
+    normalized =
+      state
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+
+    normalized in ["human review", "need human review", "needs human review"] or
+      (String.contains?(normalized, "human") and String.contains?(normalized, "review"))
+  end
+
+  defp format_tracker_error({:unsupported_tracker_write, kind}), do: "tracker comments are unavailable for #{kind}"
+  defp format_tracker_error(reason), do: inspect(reason)
 
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
     DateTime.diff(now, started_at, :second)

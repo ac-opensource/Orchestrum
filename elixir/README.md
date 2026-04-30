@@ -168,8 +168,8 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
-- Project/workspace/repository inventory, dashboard project creation, next-poll visibility, and a
-  manual refresh action
+- Project/workspace/repository inventory, dashboard project creation, next-poll visibility, a manual
+  refresh action, and tracker-backed replies for tickets needing human review
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
