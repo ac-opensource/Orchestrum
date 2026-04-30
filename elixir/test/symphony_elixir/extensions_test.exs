@@ -1358,10 +1358,33 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html =
       view
+      |> form("#add-project-form",
+        project: %{
+          "name" => "Wallet Android",
+          "project_slug" => "wallet-android",
+          "workspace_root" => "/tmp/wallet-workspaces"
+        }
+      )
+      |> render_change()
+
+    assert html =~ ~s(value="Wallet Android")
+    assert html =~ ~s(value="wallet-android")
+    assert html =~ ~s(value="/tmp/wallet-workspaces")
+
+    send(view.pid, :runtime_tick)
+    html = render(view)
+
+    assert html =~ ~s(value="Wallet Android")
+    assert html =~ ~s(value="wallet-android")
+    assert html =~ ~s(value="/tmp/wallet-workspaces")
+
+    html =
+      view
       |> form("#add-project-form", project: %{"name" => "Wallet Android", "project_slug" => ""})
       |> render_submit()
 
     assert html =~ "Linear project slug is required."
+    assert html =~ ~s(value="Wallet Android")
     assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project"]
 
     html =
@@ -1454,6 +1477,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(href="/runs?project=beta")
     assert html =~ ~s(href="/settings?project=beta")
     assert html =~ ~s(href="/diagnostics?project=beta")
+
+    {:ok, settings_view, html} = live(build_conn(), "/settings?project=beta")
+    assert html =~ ~s(data-settings-project="beta")
+    assert html =~ "Previous settings project"
+    assert html =~ "Next settings project"
+
+    html =
+      settings_view
+      |> element("button[aria-label=\"Previous settings project\"]")
+      |> render_click()
+
+    assert html =~ ~s(data-settings-project="alpha")
+
+    html =
+      settings_view
+      |> element("button[aria-label=\"Next settings project\"]")
+      |> render_click()
+
+    assert html =~ ~s(data-settings-project="beta")
 
     {:ok, project_view, _project_html} = live(build_conn(), "/projects?project=beta")
 

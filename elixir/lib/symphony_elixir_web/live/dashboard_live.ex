@@ -43,6 +43,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
       |> assign(:project_form_notice, nil)
+      |> assign(:settings_project_id, nil)
       |> assign(:task_board_filters, task_board_filters)
       |> assign(:selected_task_issue_identifier, selected_task_issue_identifier)
       |> assign(:selected_task_issue, select_task_issue(payload, selected_task_issue_identifier))
@@ -233,6 +234,41 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_event("cancel_project_form", _params, socket) do
     {:noreply, reset_project_form(socket)}
   end
+
+  @impl true
+  def handle_event("change_project_form", %{"project" => project_params}, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_project_form, true)
+     |> assign(:project_form, project_form(project_params))
+     |> assign(:project_form_error, nil)
+     |> assign(:project_form_notice, nil)}
+  end
+
+  def handle_event("change_project_form", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_project_form, true)
+     |> assign(:project_form, default_project_form())
+     |> assign(:project_form_error, nil)
+     |> assign(:project_form_notice, nil)}
+  end
+
+  @impl true
+  def handle_event("cycle_settings_project", %{"direction" => direction}, socket) do
+    projects = Map.get(socket.assigns.payload, :projects, [])
+
+    current_project =
+      selected_settings_project(
+        socket.assigns.payload,
+        socket.assigns.settings_project_id,
+        socket.assigns.selected_project_id
+      )
+
+    {:noreply, assign(socket, :settings_project_id, cycled_settings_project_id(projects, current_project, direction))}
+  end
+
+  def handle_event("cycle_settings_project", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("reply_to_ticket", %{"issue_id" => issue_id, "body" => body}, socket) do
@@ -1197,6 +1233,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <form
               id="add-project-form"
               class="project-form agent-config-form"
+              phx-change="change_project_form"
               phx-submit="add_project"
               role="dialog"
               aria-label="Add project to workflow"
@@ -1664,16 +1701,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
 
         <section :if={@current_view == "settings"} id="settings" class="ops-panel" aria-labelledby="settings-title">
+          <% settings_project = selected_settings_project(@payload, @settings_project_id, @selected_project_id) %>
           <div class="section-header">
             <div>
               <p class="section-kicker">Settings</p>
               <h2 id="settings-title" class="section-title">Runtime settings</h2>
               <p class="section-copy">Read-only workflow values that shape dashboard behavior.</p>
             </div>
+            <%= if settings_project do %>
+              <div class="settings-project-switcher" data-settings-project={settings_project.id}>
+                <button
+                  type="button"
+                  class="icon-button compact"
+                  phx-click="cycle_settings_project"
+                  phx-value-direction="previous"
+                  disabled={settings_project_count(@payload) <= 1}
+                  aria-label="Previous settings project"
+                  title="Previous project"
+                >
+                  <span aria-hidden="true">&lt;</span>
+                </button>
+                <div class="settings-project-label">
+                  <span>Project</span>
+                  <strong><%= settings_project.name || settings_project.id %></strong>
+                  <small><%= settings_project_position(@payload.projects, settings_project) %></small>
+                </div>
+                <button
+                  type="button"
+                  class="icon-button compact"
+                  phx-click="cycle_settings_project"
+                  phx-value-direction="next"
+                  disabled={settings_project_count(@payload) <= 1}
+                  aria-label="Next settings project"
+                  title="Next project"
+                >
+                  <span aria-hidden="true">&gt;</span>
+                </button>
+              </div>
+            <% end %>
           </div>
 
-          <div class="settings-grid">
-            <div :for={setting <- settings_rows(@payload)} class="setting-row">
+          <div class="settings-grid compact">
+            <div :for={setting <- settings_rows(@payload, settings_project)} class="setting-row">
               <span class="setting-label"><%= setting.label %></span>
               <span class="setting-value"><%= setting.value %></span>
             </div>
@@ -2508,26 +2577,88 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp task_filter_empty_label("retrying"), do: "retrying"
   defp task_filter_empty_label(_filter), do: "active or retrying"
 
-  defp settings_rows(payload) do
-    settings = Config.settings!()
+  defp selected_settings_project(%{projects: projects}, settings_project_id, selected_project_id) when is_list(projects) do
+    find_project(projects, settings_project_id) ||
+      find_project(projects, selected_project_id) ||
+      List.first(projects)
+  end
 
+  defp selected_settings_project(_payload, _settings_project_id, _selected_project_id), do: nil
+
+  defp cycled_settings_project_id([_ | _] = projects, current_project, direction) do
+    project_count = length(projects)
+
+    current_index =
+      Enum.find_index(projects, fn project ->
+        normalize_key(project.id) == normalize_key(current_project && current_project.id)
+      end) || 0
+
+    next_index =
+      case direction do
+        "previous" -> rem(current_index - 1 + project_count, project_count)
+        "next" -> rem(current_index + 1, project_count)
+        _direction -> current_index
+      end
+
+    projects
+    |> Enum.at(next_index)
+    |> Map.get(:id)
+  end
+
+  defp cycled_settings_project_id(_projects, _current_project, _direction), do: nil
+
+  defp settings_project_count(%{projects: projects}) when is_list(projects), do: length(projects)
+  defp settings_project_count(_payload), do: 0
+
+  defp settings_project_position(projects, project) when is_list(projects) and is_map(project) do
+    current_index =
+      Enum.find_index(projects, fn candidate ->
+        normalize_key(candidate.id) == normalize_key(project.id)
+      end)
+
+    case current_index do
+      nil -> "1 / #{max(length(projects), 1)}"
+      index -> "#{index + 1} / #{length(projects)}"
+    end
+  end
+
+  defp settings_project_position(_projects, _project), do: "0 / 0"
+
+  defp settings_rows(payload, project) do
+    settings = Config.settings!()
+    project = project || %{}
+
+    settings_project_rows(project, settings) ++ settings_runtime_rows(payload, settings)
+  end
+
+  defp settings_project_rows(project, settings) do
     [
-      %{label: "Tracker", value: settings.tracker.kind || "n/a"},
-      %{label: "Project slug", value: settings.tracker.project_slug || "n/a"},
-      %{label: "Active states", value: Enum.join(settings.tracker.active_states || [], ", ")},
-      %{label: "Terminal states", value: Enum.join(settings.tracker.terminal_states || [], ", ")},
-      %{label: "Polling interval", value: format_poll_interval(payload.polling)},
-      %{label: "Snapshot timeout", value: "#{settings.observability.snapshot_timeout_ms} ms"},
-      %{label: "Workspace root", value: settings.workspace.root},
-      %{label: "Agent capacity", value: Integer.to_string(settings.agent.max_concurrent_agents)},
-      %{label: "Max turns", value: Integer.to_string(settings.agent.max_turns)},
-      %{label: "Server", value: server_setting(settings.server)}
+      %{label: "Tracker", value: project_setting(project, :tracker_kind, settings.tracker.kind, "n/a")},
+      %{label: "Project slug", value: project_setting(project, :tracker_project_slug, settings.tracker.project_slug, "n/a")},
+      %{label: "Active states", value: project_state_list(Map.get(project, :active_states) || settings.tracker.active_states)},
+      %{label: "Terminal states", value: project_state_list(Map.get(project, :terminal_states) || settings.tracker.terminal_states)},
+      %{label: "Workspace root", value: project_setting(project, :workspace_root, settings.workspace.root, "n/a")},
+      %{label: "Repository", value: project_setting(project, :repository_path, nil, "default hook")},
+      %{label: "Git identity", value: git_identity_lines(project) |> Enum.join(", ")},
+      %{label: "Agent instructions", value: agent_instruction_status(project)}
     ]
   end
 
-  defp server_setting(%{enabled: false}), do: "disabled"
-  defp server_setting(%{host: host, port: nil}), do: "#{host}:4000"
-  defp server_setting(%{host: host, port: port}), do: "#{host}:#{port}"
+  defp settings_runtime_rows(payload, settings) do
+    [
+      %{label: "Polling interval", value: format_poll_interval(payload.polling)},
+      %{label: "Snapshot timeout", value: "#{settings.observability.snapshot_timeout_ms} ms"},
+      %{label: "Agent capacity", value: Integer.to_string(settings.agent.max_concurrent_agents)},
+      %{label: "Max turns", value: Integer.to_string(settings.agent.max_turns)}
+    ]
+  end
+
+  defp project_setting(project, key, fallback, default) do
+    Map.get(project, key) || fallback || default
+  end
+
+  defp project_state_list(states) when is_list(states), do: Enum.join(states, ", ")
+  defp project_state_list(_states), do: "n/a"
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
