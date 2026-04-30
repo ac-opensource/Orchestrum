@@ -385,6 +385,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload["counts"] == %{"running" => 1, "retrying" => 1}
     assert [%{"tracker_project_slug" => "project"}] = state_payload["projects"]
+    assert state_payload["mcp_servers"] == []
 
     assert state_payload["polling"] == %{
              "checking?" => false,
@@ -414,6 +415,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "mcp_servers" => [],
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              }
            ] = state_payload["running"]
@@ -463,6 +465,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "mcp_servers" => [],
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
@@ -716,6 +719,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     assert html =~ "Refresh now"
+    assert html =~ "MCP servers"
+    assert html =~ "No MCP servers reported."
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
@@ -768,13 +773,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
-  test "dashboard liveview sends controls and renders result messages" do
+  test "dashboard liveview renders MCP status, controls, and result messages" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardControlOrchestrator)
+
+    snapshot =
+      update_in(static_snapshot().running, fn [entry] ->
+        [
+          Map.put(entry, :mcp_servers, [
+            %{
+              name: "linear",
+              status: "failed",
+              detail: "Missing OAuth token",
+              action: "re_auth",
+              updated_at: ~U[2026-04-30 03:10:00Z]
+            },
+            %{
+              name: "github",
+              status: "ready",
+              detail: "Connected",
+              action: nil,
+              updated_at: ~U[2026-04-30 03:11:00Z]
+            }
+          ])
+        ]
+      end)
 
     {:ok, _orchestrator_pid} =
       StaticOrchestrator.start_link(
         name: orchestrator_name,
-        snapshot: static_snapshot(),
+        snapshot: snapshot,
         controls: %{
           {:pause_polling, :global} => %{
             ok: true,
@@ -801,6 +828,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "MCP servers"
+    assert html =~ "linear"
+    assert html =~ "failed"
+    assert html =~ "Missing OAuth token"
+    assert html =~ "MT-HTTP"
+    assert html =~ "Re-auth"
+    assert html =~ "github"
+    assert html =~ "ready"
     assert html =~ "data-confirm=\"Pause global polling?\""
     assert html =~ "phx-disable-with=\"Working\""
 

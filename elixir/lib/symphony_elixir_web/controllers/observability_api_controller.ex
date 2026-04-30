@@ -25,6 +25,20 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec task_board(Conn.t(), map()) :: Conn.t()
+  def task_board(conn, params) do
+    case Presenter.task_board_payload(orchestrator(), snapshot_timeout_ms(), params) do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, {:invalid_request, message}} ->
+        error_response(conn, 400, "invalid_request", message)
+
+      {:error, {:tracker_error, reason}} ->
+        error_response(conn, 502, "tracker_error", "Tracker request failed", %{reason: inspect(reason)})
+    end
+  end
+
   @spec refresh(Conn.t(), map()) :: Conn.t()
   def refresh(conn, _params) do
     case Presenter.refresh_payload(orchestrator()) do
@@ -35,6 +49,27 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
       {:error, :unavailable} ->
         error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+    end
+  end
+
+  @spec control(Conn.t(), map()) :: Conn.t()
+  def control(conn, %{"control_action" => control_action} = params) do
+    params = Map.delete(params, "control_action")
+
+    if authorized_control_request?(conn) do
+      case Presenter.control_payload(control_action, params, orchestrator()) do
+        {:ok, status, payload} ->
+          conn
+          |> put_status(status)
+          |> json(payload)
+
+        {:error, status, payload} ->
+          conn
+          |> put_status(status)
+          |> json(payload)
+      end
+    else
+      error_response(conn, 401, "unauthorized", "Control token is invalid")
     end
   end
 
@@ -68,10 +103,17 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     error_response(conn, 404, "not_found", "Route not found")
   end
 
-  defp error_response(conn, status, code, message) do
+  defp error_response(conn, status, code, message, details \\ nil) do
+    error =
+      if is_nil(details) do
+        %{code: code, message: message}
+      else
+        %{code: code, message: message, details: details}
+      end
+
     conn
     |> put_status(status)
-    |> json(%{error: %{code: code, message: message}})
+    |> json(%{error: error})
   end
 
   defp control_response(conn, action, target) do

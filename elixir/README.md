@@ -168,11 +168,13 @@ codex:
   `server.port` or port `4000` when no port is set. CLI `--port` overrides workflow server config.
 - `observability.snapshot_timeout_ms` controls dashboard/API snapshot calls.
 - The dashboard/API are available at `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`,
-  `/api/v1/refresh`, and `/api/v1/control/*`.
+  `/api/v1/task-board`, `/api/v1/refresh`, and `/api/v1/control/*`.
 - Control endpoints are explicit POST-only side effects:
   `/api/v1/control/polling/{pause,resume}`,
   `/api/v1/control/projects/<project_id>/{pause,resume,dispatch}`, and
   `/api/v1/control/issues/<issue_identifier>/{cancel,retry,clear_retry,release_claim}`.
+  Task-board responses include configured project metadata, tracker issue fields, applied filters,
+  limit/offset pagination, and running/retry overlay state.
   If Phoenix endpoint config includes `control_token`, requests must send it as
   `x-orchestrum-control-token`.
 
@@ -182,8 +184,9 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
-- Project/workspace/repository inventory, dashboard project creation, next-poll visibility, manual
-  refresh, tracker-backed replies for tickets needing human review, and confirmed run/queue controls
+- Project/workspace/repository inventory, dashboard project creation, MCP server status visibility,
+  next-poll visibility, manual refresh, tracker-backed replies for tickets needing human review,
+  and confirmed run/queue controls
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
