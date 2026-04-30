@@ -400,6 +400,12 @@ Fields:
 - `repository.path` (path string or `$VAR`, OPTIONAL)
   - If set, implementations MAY clone or otherwise populate this repository into a newly created
     workspace before running workspace creation hooks.
+- `git` (object, OPTIONAL)
+  - Project-specific Git identity and credential hints for prepared Git workspaces.
+  - `name` maps to local Git `user.name`.
+  - `email` maps to local Git `user.email`.
+  - `username` maps to local Git `credential.username`.
+  - Values MAY be literal strings or `$VAR_NAME`.
 
 When `projects` is absent or empty, implementations SHOULD expose one default project derived from
 the top-level tracker and workspace settings.
@@ -602,6 +608,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/orchestrum_workspaces`
 - `projects`: list of project-specific tracker/workspace/repository overrides, default `[]`
+- `projects[].git`: optional per-project Git `name`, `email`, and `username`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -879,6 +886,15 @@ The spec does not require any built-in VCS or repository bootstrap behavior.
 
 Implementations MAY populate or synchronize the workspace using implementation-defined logic and/or
 hooks (for example `after_create` and/or `before_run`).
+
+If an implementation supports `projects[].repository.path`, it SHOULD prepare that repository before
+running `hooks.after_create` so hooks can assume the project checkout already exists. If it supports
+`projects[].git`, it SHOULD apply the configured Git identity to the prepared Git workspace before
+`hooks.after_create` so bootstrap hooks can make commits with the project-specific identity.
+
+If a prepared workspace contains project-owned agent guidance files at its root (for example
+`AGENTS.md` or `agent.md`), implementations MAY inject those instructions into the launched coding
+agent session before the workflow prompt.
 
 Failure handling:
 
@@ -1445,6 +1461,10 @@ Enablement (extension):
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
 - If the dashboard exposes project management controls, adding a project MUST persist through the
   same `WORKFLOW.md` `projects` configuration model used by orchestration and polling.
+- Project management controls SHOULD expose configured workspace, repository, Git identity, and
+  agent instruction status when the implementation supports those project-specific settings.
+- If the dashboard exposes ticket reply controls, submitted replies MUST use the configured tracker
+  adapter write path rather than only updating local observability state.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 

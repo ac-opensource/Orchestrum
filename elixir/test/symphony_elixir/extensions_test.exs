@@ -27,8 +27,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def graphql(query, variables) do
-      send(self(), {:graphql_called, query, variables})
+      recipient = Application.get_env(:symphony_elixir, :fake_linear_recipient, self())
+      send(recipient, {:graphql_called, query, variables})
 
+      case Application.get_env(:symphony_elixir, :fake_linear_graphql_results) do
+        [result | rest] ->
+          Application.put_env(:symphony_elixir, :fake_linear_graphql_results, rest)
+          result
+
+        _ ->
+          application_result = Application.get_env(:symphony_elixir, :fake_linear_graphql_result)
+
+          if is_nil(application_result) do
+            process_graphql_result()
+          else
+            application_result
+          end
+      end
+    end
+
+    defp process_graphql_result do
       case Process.get({__MODULE__, :graphql_results}) do
         [result | rest] ->
           Process.put({__MODULE__, :graphql_results}, rest)
@@ -82,6 +100,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
 
     on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :fake_linear_graphql_result)
+      Application.delete_env(:symphony_elixir, :fake_linear_graphql_results)
+      Application.delete_env(:symphony_elixir, :fake_linear_recipient)
+
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
@@ -581,6 +603,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Copy ID"
     assert html =~ "aria-label=\"Copy session ID for MT-HTTP\""
     assert html =~ "Codex update"
+    refute html =~ "ticket-reply-form"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     assert html =~ "aria-label=\"Refresh dashboard now\""
@@ -652,6 +675,52 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview sends ticket replies for human review sessions" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Application.put_env(:symphony_elixir, :fake_linear_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :DashboardTicketReplyOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running, Access.at(0), :state], "Need Human Review")
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "ticket-reply-form-issue-http"
+    assert html =~ "Reply to MT-HTTP"
+
+    html =
+      view
+      |> form("#ticket-reply-form-issue-http", %{"body" => "   "})
+      |> render_submit()
+
+    assert html =~ "Reply body is required."
+
+    Application.put_env(
+      :symphony_elixir,
+      :fake_linear_graphql_result,
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    html =
+      view
+      |> form("#ticket-reply-form-issue-http", %{"body" => "  Human reply from dashboard  "})
+      |> render_submit()
+
+    assert html =~ "Reply sent"
+    assert_receive {:graphql_called, create_comment_query, %{body: "Human reply from dashboard", issueId: "issue-http"}}
+    assert create_comment_query =~ "commentCreate"
+  end
+
   test "dashboard liveview adds projects to workflow config" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardProjectOrchestrator)
 
@@ -668,6 +737,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Projects"
     assert html =~ "Project command center"
     assert html =~ "aria-label=\"Add project\""
+    assert html =~ "Git identity"
+    assert html =~ "Agent instructions"
 
     html =
       view
@@ -678,6 +749,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "role=\"dialog\""
     assert html =~ "aria-label=\"Add project to workflow\""
     assert html =~ "data-confirm=\"Add this project to WORKFLOW.md?\""
+    assert html =~ "Local directory"
+    assert html =~ "Remote repository"
+    assert html =~ "Git name"
 
     html =
       view
@@ -692,13 +766,23 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> form("#add-project-form",
         project: %{
           "name" => "Wallet Android",
-          "project_slug" => "wallet-android"
+          "project_slug" => "wallet-android",
+          "workspace_root" => "/tmp/wallet-workspaces",
+          "repository_path" => "https://github.com/ac-opensource/wallet-android",
+          "git_name" => "Wallet Bot",
+          "git_username" => "wallet-bot",
+          "git_email" => "wallet-bot@example.com"
         }
       )
       |> render_submit()
 
     assert html =~ "Wallet Android"
     assert html =~ "wallet-android"
+    assert html =~ "/tmp/wallet-workspaces"
+    assert html =~ "https://github.com/ac-opensource/wallet-android"
+    assert html =~ "name: Wallet Bot"
+    assert html =~ "username: wallet-bot"
+    assert html =~ "email: wallet-bot@example.com"
     assert html =~ "Wallet Android added"
 
     assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project", "wallet-android"]
@@ -711,7 +795,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{
                "id" => "wallet-android",
                "name" => "Wallet Android",
-               "tracker" => %{"project_slug" => "wallet-android"}
+               "tracker" => %{"project_slug" => "wallet-android"},
+               "workspace" => %{"root" => "/tmp/wallet-workspaces"},
+               "repository" => %{"path" => "https://github.com/ac-opensource/wallet-android"},
+               "git" => %{
+                 "name" => "Wallet Bot",
+                 "username" => "wallet-bot",
+                 "email" => "wallet-bot@example.com"
+               }
              }
            ] = config["projects"]
 
