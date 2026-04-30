@@ -7,6 +7,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
   alias SymphonyElixir.Tracker.Unsupported
+  alias SymphonyElixirWeb.Presenter
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -449,6 +450,46 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "presenter groups and filters tracker task board issues with runtime status" do
+    now = ~U[2026-04-30 00:00:00Z]
+
+    payload =
+      Presenter.task_board_payload_for_test(
+        task_board_issues(),
+        task_board_snapshot(),
+        %{"label" => "backend"},
+        now
+      )
+
+    assert payload.filtered_count == 2
+    assert payload.total_count == 5
+    assert Enum.map(payload.groups, & &1.title) == ["Todo", "In Progress", "Human Review", "Rework", "Merging", "Done / terminal"]
+
+    todo_group = Enum.find(payload.groups, &(&1.id == "todo"))
+    assert [%{issue_identifier: "AC-TODO"} = todo_issue] = todo_group.issues
+    assert todo_issue.assignee == "Andrew"
+    assert todo_issue.relations.blocked
+    assert todo_issue.relations.label == "Blocked by AC-BLOCK"
+    assert todo_issue.run_status.status == "idle"
+    assert todo_issue.age_label == "4d ago"
+    assert todo_issue.updated_label == "1d ago"
+
+    rework_group = Enum.find(payload.groups, &(&1.id == "rework"))
+    assert [%{issue_identifier: "AC-RETRY", run_status: %{status: "retrying", attempt: 2}}] = rework_group.issues
+
+    active_payload =
+      Presenter.task_board_payload_for_test(task_board_issues(), task_board_snapshot(), %{status: "active"}, now)
+
+    assert active_payload.filtered_count == 1
+    assert [%{issue_identifier: "AC-RUN"}] = active_payload.issues
+
+    empty_payload =
+      Presenter.task_board_payload_for_test(task_board_issues(), task_board_snapshot(), %{query: "missing"}, now)
+
+    assert empty_payload.filtered_count == 0
+    assert Enum.all?(empty_payload.groups, &(&1.issues == []))
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -616,6 +657,61 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "dashboard liveview loads, filters, and opens task board issue details" do
+    parent = self()
+
+    Application.put_env(:symphony_elixir, :task_board_fetcher, fn states ->
+      send(parent, {:task_board_fetch, states})
+      {:ok, task_board_issues()}
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :TaskBoardDashboardOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: task_board_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "Task board"
+    assert html =~ "AC-TODO"
+    assert html =~ "Human Review"
+    assert html =~ "Done / terminal"
+
+    assert_receive {:task_board_fetch, states}
+    assert "Todo" in states
+    assert "Human Review" in states
+    assert "Done" in states
+
+    filtered_html =
+      view
+      |> form("#task-board-filters",
+        task_board: %{
+          "project" => "",
+          "state" => "",
+          "label" => "backend",
+          "status" => "",
+          "query" => ""
+        }
+      )
+      |> render_change()
+
+    assert filtered_html =~ "AC-TODO"
+    assert filtered_html =~ "AC-RETRY"
+    refute filtered_html =~ "AC-REVIEW"
+
+    {:ok, _detail_view, detail_html} = live(build_conn(), "/?issue=AC-TODO")
+
+    assert detail_html =~ "AC-TODO"
+    assert detail_html =~ "Blocked by AC-BLOCK"
+    assert detail_html =~ "JSON details"
+    assert detail_html =~ "Open tracker"
   end
 
   test "dashboard liveview adds projects to workflow config" do
@@ -814,6 +910,100 @@ defmodule SymphonyElixir.ExtensionsTest do
       rate_limits: %{"primary" => %{"remaining" => 11}},
       polling: %{checking?: false, next_poll_in_ms: 25_000, poll_interval_ms: 30_000}
     }
+  end
+
+  defp task_board_snapshot do
+    static_snapshot()
+    |> Map.put(:running, [
+      %{
+        issue_id: "issue-run",
+        identifier: "AC-RUN",
+        state: "In Progress",
+        project: %{id: "project-1", name: "Core", slug: "core"},
+        session_id: "thread-run",
+        turn_count: 3,
+        codex_app_server_pid: nil,
+        last_codex_message: "working",
+        last_codex_timestamp: nil,
+        last_codex_event: :notification,
+        codex_input_tokens: 1,
+        codex_output_tokens: 2,
+        codex_total_tokens: 3,
+        workspace_path: "/tmp/orchestrum/AC-RUN",
+        started_at: ~U[2026-04-29 23:00:00Z]
+      }
+    ])
+    |> Map.put(:retrying, [
+      %{
+        issue_id: "issue-retry",
+        identifier: "AC-RETRY",
+        attempt: 2,
+        due_in_ms: 5_000,
+        error: "review requested",
+        project: %{id: "project-1", name: "Core", slug: "core"},
+        workspace_path: "/tmp/orchestrum/AC-RETRY"
+      }
+    ])
+  end
+
+  defp task_board_issues do
+    [
+      %Issue{
+        id: "issue-todo",
+        identifier: "AC-TODO",
+        title: "Queued backend work",
+        state: "Todo",
+        url: "https://linear.app/ac-bitcoin/issue/AC-TODO",
+        assignee_id: "user-1",
+        assignee_name: "Andrew",
+        project: %{id: "project-1", name: "Core", slug: "core"},
+        labels: ["backend"],
+        blocked_by: [%{id: "issue-block", identifier: "AC-BLOCK", state: "In Progress"}],
+        created_at: ~U[2026-04-26 00:00:00Z],
+        updated_at: ~U[2026-04-29 00:00:00Z]
+      },
+      %Issue{
+        id: "issue-run",
+        identifier: "AC-RUN",
+        title: "Running dashboard work",
+        state: "In Progress",
+        assignee_name: "Codex",
+        project: %{id: "project-1", name: "Core", slug: "core"},
+        labels: ["ui"],
+        created_at: ~U[2026-04-28 00:00:00Z],
+        updated_at: ~U[2026-04-29 23:30:00Z]
+      },
+      %Issue{
+        id: "issue-review",
+        identifier: "AC-REVIEW",
+        title: "Needs review",
+        state: "Human Review",
+        project: %{id: "project-2", name: "Wallet", slug: "wallet"},
+        labels: ["review"],
+        created_at: ~U[2026-04-27 00:00:00Z],
+        updated_at: ~U[2026-04-29 10:00:00Z]
+      },
+      %Issue{
+        id: "issue-retry",
+        identifier: "AC-RETRY",
+        title: "Retry after feedback",
+        state: "Rework",
+        project: %{id: "project-1", name: "Core", slug: "core"},
+        labels: ["backend"],
+        created_at: ~U[2026-04-25 00:00:00Z],
+        updated_at: ~U[2026-04-29 12:00:00Z]
+      },
+      %Issue{
+        id: "issue-done",
+        identifier: "AC-DONE",
+        title: "Completed work",
+        state: "Done",
+        project: %{id: "project-2", name: "Wallet", slug: "wallet"},
+        labels: ["done"],
+        created_at: ~U[2026-04-20 00:00:00Z],
+        updated_at: ~U[2026-04-28 00:00:00Z]
+      }
+    ]
   end
 
   defp wait_for_bound_port do

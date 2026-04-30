@@ -37,14 +37,24 @@ defmodule SymphonyElixir.TestSupport do
         Workflow.set_workflow_file_path(workflow_file)
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
+        previous_task_board_fetcher = Application.get_env(:symphony_elixir, :task_board_fetcher)
 
         on_exit(fn ->
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+
+          if is_nil(previous_task_board_fetcher) do
+            Application.delete_env(:symphony_elixir, :task_board_fetcher)
+          else
+            Application.put_env(:symphony_elixir, :task_board_fetcher, previous_task_board_fetcher)
+          end
+
           File.rm_rf(workflow_root)
         end)
+
+        Application.put_env(:symphony_elixir, :task_board_fetcher, fn _states -> {:ok, []} end)
 
         :ok
       end
