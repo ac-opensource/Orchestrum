@@ -751,7 +751,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
       "assignee" => %{
-        "id" => "user-1"
+        "id" => "user-1",
+        "name" => "Worker One"
       },
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
       "inverseRelations" => %{
@@ -785,6 +786,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
+    assert issue.assignee_name == "Worker One"
     assert issue.assigned_to_worker
   end
 

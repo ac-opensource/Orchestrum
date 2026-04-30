@@ -21,13 +21,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def mount(params, _session, socket) do
+    task_board_filters = Presenter.normalize_task_board_filters(params)
     selected_issue_identifier = params["issue_identifier"]
+    selected_task_issue_identifier = selected_task_issue_identifier(params)
+    payload = load_payload(task_board_filters, selected_issue_identifier)
 
     socket =
       socket
       |> assign(:selected_issue_identifier, selected_issue_identifier)
       |> assign(:event_query, "")
-      |> assign(:payload, load_payload(selected_issue_identifier))
+      |> assign(:payload, payload)
       |> assign(:now, DateTime.utc_now())
       |> assign(:current_view, "overview")
       |> assign(:selected_project_id, "all")
@@ -40,6 +43,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:project_form, default_project_form())
       |> assign(:project_form_error, nil)
       |> assign(:project_form_notice, nil)
+      |> assign(:task_board_filters, task_board_filters)
+      |> assign(:selected_task_issue_identifier, selected_task_issue_identifier)
+      |> assign(:selected_task_issue, select_task_issue(payload, selected_task_issue_identifier))
       |> assign(:ticket_reply_errors, %{})
       |> assign(:ticket_reply_notices, %{})
 
@@ -53,10 +59,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    task_board_filters = Presenter.normalize_task_board_filters(params)
+    selected_issue_identifier = params["issue_identifier"]
+    selected_task_issue_identifier = selected_task_issue_identifier(params)
+
     {:noreply,
      socket
+     |> assign(:selected_issue_identifier, selected_issue_identifier)
      |> assign(:current_view, view_from_params(params, socket.assigns.live_action))
-     |> assign(:selected_project_id, selected_project_id(params, socket.assigns.payload))}
+     |> assign(:selected_project_id, selected_project_id(params, socket.assigns.payload))
+     |> assign(:task_board_filters, task_board_filters)
+     |> assign(:selected_task_issue_identifier, selected_task_issue_identifier)
+     |> assign_payload()}
   end
 
   @impl true
@@ -69,7 +83,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_info(:observability_updated, socket) do
     {:noreply,
      socket
-     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+     |> assign_payload()
      |> assign(:now, DateTime.utc_now())}
   end
 
@@ -85,7 +99,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     {:noreply,
      socket
-     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+     |> assign_payload()
      |> assign(:now, DateTime.utc_now())
      |> assign(:refresh_notice, notice)}
   end
@@ -102,7 +116,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     {:noreply,
      socket
-     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+     |> assign_payload()
      |> assign(:now, DateTime.utc_now())
      |> assign(:control_notice, notice)}
   end
@@ -131,7 +145,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     {:noreply,
      socket
-     |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+     |> assign_payload()
      |> assign(:now, DateTime.utc_now())
      |> assign(:project_action_notice, notice)
      |> assign(:project_action_error, error)}
@@ -151,6 +165,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("filter_tasks", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("filter_task_board", %{"task_board" => raw_filters}, socket) do
+    filters = Presenter.normalize_task_board_filters(raw_filters)
+    {:noreply, push_patch(socket, to: task_board_path(filters, socket.assigns.selected_task_issue_identifier))}
+  end
+
+  def handle_event("filter_task_board", _params, socket) do
+    {:noreply, push_patch(socket, to: task_board_path(%{}, socket.assigns.selected_task_issue_identifier))}
+  end
+
+  @impl true
+  def handle_event("select_task_issue", %{"identifier" => identifier}, socket) do
+    {:noreply, push_patch(socket, to: task_board_path(socket.assigns.task_board_filters, identifier))}
+  end
+
+  @impl true
+  def handle_event("clear_task_issue", _params, socket) do
+    {:noreply, push_patch(socket, to: task_board_path(socket.assigns.task_board_filters, nil))}
+  end
 
   @impl true
   def handle_event("show_project_form", _params, socket) do
@@ -183,7 +217,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           :ok ->
             {:noreply,
              socket
-             |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+             |> assign_payload()
              |> assign(:now, DateTime.utc_now())
              |> put_ticket_reply_notice(issue_id, "Reply sent")}
 
@@ -204,7 +238,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         {:noreply,
          socket
          |> reset_project_form()
-         |> assign(:payload, load_payload(socket.assigns.selected_issue_identifier))
+         |> assign_payload()
          |> assign(:now, DateTime.utc_now())
          |> assign(:project_form_notice, "#{project.name} added")}
 
@@ -536,11 +570,204 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section id="tasks" class="ops-panel" aria-labelledby="tasks-title">
+        <section id="tasks" class="ops-panel task-board-section" aria-labelledby="tasks-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Tasks</p>
               <h2 id="tasks-title" class="section-title">Task board</h2>
+              <p class="section-copy">Tracker-backed queue for configured projects.</p>
+            </div>
+            <span class="timestamp-pill numeric">
+              <%= @payload.task_board.filtered_count %> / <%= @payload.task_board.total_count %>
+            </span>
+          </div>
+
+          <%= if @payload.task_board.error do %>
+            <p class="form-error"><%= @payload.task_board.error.message %></p>
+          <% end %>
+
+          <form id="task-board-filters" class="task-filter-form" phx-change="filter_task_board">
+            <label>
+              <span>Project</span>
+              <select name="task_board[project]">
+                <option value="" selected={@payload.task_board.filters.project == ""}>All projects</option>
+                <option
+                  :for={option <- @payload.task_board.options.projects}
+                  value={option.value}
+                  selected={@payload.task_board.filters.project == option.value}
+                ><%= option.label %></option>
+              </select>
+            </label>
+
+            <label>
+              <span>State</span>
+              <select name="task_board[state]">
+                <option value="" selected={@payload.task_board.filters.state == ""}>All states</option>
+                <option
+                  :for={option <- @payload.task_board.options.states}
+                  value={option.value}
+                  selected={@payload.task_board.filters.state == option.value}
+                ><%= option.label %></option>
+              </select>
+            </label>
+
+            <label>
+              <span>Label</span>
+              <select name="task_board[label]">
+                <option value="" selected={@payload.task_board.filters.label == ""}>All labels</option>
+                <option
+                  :for={option <- @payload.task_board.options.labels}
+                  value={option.value}
+                  selected={@payload.task_board.filters.label == option.value}
+                ><%= option.label %></option>
+              </select>
+            </label>
+
+            <label>
+              <span>Status</span>
+              <select name="task_board[status]">
+                <option
+                  :for={option <- @payload.task_board.options.statuses}
+                  value={option.value}
+                  selected={@payload.task_board.filters.status == option.value}
+                ><%= option.label %></option>
+              </select>
+            </label>
+
+            <label class="task-filter-query">
+              <span>Search</span>
+              <input
+                type="search"
+                name="task_board[query]"
+                value={@payload.task_board.filters.query}
+                phx-debounce="300"
+                autocomplete="off"
+              />
+            </label>
+          </form>
+
+          <div class="task-board-layout">
+            <div class="task-board-groups">
+              <section :for={group <- @payload.task_board.groups} class="task-group">
+                <header class="task-group-header">
+                  <h3><%= group.title %></h3>
+                  <span class="numeric"><%= group.count %></span>
+                </header>
+
+                <%= if group.issues == [] do %>
+                  <p class="empty-state">No issues.</p>
+                <% else %>
+                  <article
+                    :for={issue <- group.issues}
+                    class={[
+                      "task-issue-row",
+                      selected_task_issue?(@selected_task_issue_identifier, issue) && "task-issue-row-selected"
+                    ]}
+                  >
+                    <div class="task-issue-topline">
+                      <button
+                        type="button"
+                        class="task-issue-button"
+                        phx-click="select_task_issue"
+                        phx-value-identifier={issue.issue_identifier}
+                      >
+                        <span class="issue-id"><%= issue.issue_identifier %></span>
+                        <span><%= issue.title %></span>
+                      </button>
+                      <span class={state_badge_class(issue.state)}>
+                        <%= issue.state %>
+                      </span>
+                    </div>
+
+                    <div class="task-issue-meta">
+                      <span><%= issue.project_label %></span>
+                      <span><%= assignee_label(issue.assignee) %></span>
+                      <span>Age <%= issue.age_label %></span>
+                      <span>Updated <%= issue.updated_label %></span>
+                      <span><%= issue.relations.label %></span>
+                      <span class={run_status_class(issue.run_status.status)}>
+                        <%= issue.run_status.label %>
+                      </span>
+                    </div>
+
+                    <div class="task-labels">
+                      <span :for={label <- issue.labels} class="task-label"><%= label %></span>
+                      <span :if={issue.labels == []} class="muted">No labels</span>
+                    </div>
+                  </article>
+                <% end %>
+              </section>
+            </div>
+
+            <aside class="task-detail-panel">
+              <%= if @selected_task_issue do %>
+                <div class="task-detail-header">
+                  <div>
+                    <p class="eyebrow"><%= @selected_task_issue.issue_identifier %></p>
+                    <h3><%= @selected_task_issue.title %></h3>
+                  </div>
+                  <button type="button" class="subtle-button" phx-click="clear_task_issue">Close</button>
+                </div>
+
+                <dl class="task-detail-list">
+                  <div>
+                    <dt>State</dt>
+                    <dd><%= @selected_task_issue.state %></dd>
+                  </div>
+                  <div>
+                    <dt>Project</dt>
+                    <dd><%= @selected_task_issue.project_label %></dd>
+                  </div>
+                  <div>
+                    <dt>Assignee</dt>
+                    <dd><%= assignee_label(@selected_task_issue.assignee) %></dd>
+                  </div>
+                  <div>
+                    <dt>Run status</dt>
+                    <dd><%= @selected_task_issue.run_status.label %></dd>
+                  </div>
+                  <div>
+                    <dt>Relations</dt>
+                    <dd><%= @selected_task_issue.relations.label %></dd>
+                  </div>
+                  <div>
+                    <dt>Updated</dt>
+                    <dd><%= @selected_task_issue.updated_label %></dd>
+                  </div>
+                  <div :if={@selected_task_issue.run_status[:workspace_path]}>
+                    <dt>Workspace</dt>
+                    <dd class="mono path-text"><%= @selected_task_issue.run_status.workspace_path %></dd>
+                  </div>
+                  <div :if={@selected_task_issue.run_status[:session_id]}>
+                    <dt>Session</dt>
+                    <dd class="mono"><%= @selected_task_issue.run_status.session_id %></dd>
+                  </div>
+                  <div :if={@selected_task_issue.run_status[:error]}>
+                    <dt>Last error</dt>
+                    <dd><%= @selected_task_issue.run_status.error %></dd>
+                  </div>
+                </dl>
+
+                <div class="task-detail-actions">
+                  <a :if={@selected_task_issue.url} class="issue-link" href={@selected_task_issue.url} target="_blank" rel="noreferrer">
+                    Open tracker
+                  </a>
+                  <a class="issue-link" href={"/api/v1/#{@selected_task_issue.issue_identifier}"}>
+                    JSON details
+                  </a>
+                </div>
+              <% else %>
+                <p class="empty-state">Select an issue to inspect details.</p>
+              <% end %>
+            </aside>
+          </div>
+        </section>
+
+        <section id="runtime-queue" class="ops-panel" aria-labelledby="runtime-queue-title">
+          <div class="section-header">
+            <div>
+              <p class="section-kicker">Runtime</p>
+              <h2 id="runtime-queue-title" class="section-title">Runtime queue</h2>
               <p class="section-copy">Active and retrying work, filtered without changing orchestrator state.</p>
             </div>
 
@@ -1267,8 +1494,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
-  defp load_payload(selected_issue_identifier) do
-    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  defp load_payload(filters, selected_issue_identifier) do
+    payload = Presenter.state_payload(orchestrator(), snapshot_timeout_ms(), filters)
 
     selected_detail =
       case selected_issue_identifier do
@@ -1283,6 +1510,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end
 
     Map.put(payload, :selected_detail, selected_detail)
+  end
+
+  defp assign_payload(socket) do
+    filters = socket.assigns[:task_board_filters] || %{}
+    selected_issue_identifier = socket.assigns[:selected_issue_identifier]
+    selected_task_issue_identifier = socket.assigns[:selected_task_issue_identifier]
+    payload = load_payload(filters, selected_issue_identifier)
+
+    socket
+    |> assign(:payload, payload)
+    |> assign(:selected_task_issue, select_task_issue(payload, selected_task_issue_identifier))
   end
 
   defp selected_project_id(params, %{projects: projects}) when is_map(params) and is_list(projects) do
@@ -1316,9 +1554,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp nav_link_class(view, view), do: "section-nav-link section-nav-link-active"
   defp nav_link_class(_view, _current_view), do: "section-nav-link"
 
-  defp dashboard_nav_count(view, payload, project_id) when view in ["overview", "tasks"],
+  defp dashboard_nav_count("overview", payload, project_id),
     do: visible_task_count(payload, project_id)
 
+  defp dashboard_nav_count("tasks", payload, _project_id), do: task_board_count(payload)
   defp dashboard_nav_count("runs", payload, project_id), do: visible_running_count(payload, project_id)
   defp dashboard_nav_count("projects", payload, project_id), do: visible_project_count(payload, project_id)
   defp dashboard_nav_count(_view, _payload, _project_id), do: nil
@@ -1419,6 +1658,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || Config.snapshot_timeout_ms()
   end
+
+  defp task_board_count(%{task_board: %{filtered_count: count}}) when is_integer(count), do: count
+  defp task_board_count(_payload), do: 0
 
   defp visible_task_count(payload, project_id),
     do: visible_running_count(payload, project_id) + visible_retrying_count(payload, project_id)
@@ -1548,6 +1790,57 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
+
+  defp assignee_label(nil), do: "Unassigned"
+  defp assignee_label(""), do: "Unassigned"
+  defp assignee_label(assignee), do: assignee
+
+  defp selected_task_issue?(selected_identifier, issue) when is_binary(selected_identifier) do
+    selected_identifier == issue.issue_identifier || selected_identifier == issue.issue_id
+  end
+
+  defp selected_task_issue?(_selected_identifier, _issue), do: false
+
+  defp selected_task_issue_identifier(%{"issue" => issue}) when is_binary(issue) do
+    case String.trim(issue) do
+      "" -> nil
+      selected -> selected
+    end
+  end
+
+  defp selected_task_issue_identifier(_params), do: nil
+
+  defp select_task_issue(_payload, nil), do: nil
+
+  defp select_task_issue(%{task_board: %{issues: issues}}, selected_identifier) when is_binary(selected_identifier) do
+    Enum.find(issues, &selected_task_issue?(selected_identifier, &1))
+  end
+
+  defp select_task_issue(_payload, _selected_identifier), do: nil
+
+  defp task_board_path(filters, selected_identifier) do
+    filters
+    |> Presenter.normalize_task_board_filters()
+    |> Enum.reduce(%{}, fn
+      {_key, ""}, acc -> acc
+      {key, value}, acc -> Map.put(acc, Atom.to_string(key), value)
+    end)
+    |> maybe_put_issue_param(selected_identifier)
+    |> URI.encode_query()
+    |> case do
+      "" -> "/"
+      query -> "/tasks?" <> query
+    end
+  end
+
+  defp maybe_put_issue_param(params, selected_identifier) when is_binary(selected_identifier) do
+    case String.trim(selected_identifier) do
+      "" -> params
+      identifier -> Map.put(params, "issue", identifier)
+    end
+  end
+
+  defp maybe_put_issue_param(params, _selected_identifier), do: params
 
   defp state_list(states) when is_list(states), do: Enum.join(states, ", ")
   defp state_list(_states), do: "n/a"
@@ -1723,6 +2016,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp run_status_class("active"), do: "state-badge state-badge-active"
+  defp run_status_class("retrying"), do: "state-badge state-badge-warning"
+  defp run_status_class("idle"), do: "state-badge"
+  defp run_status_class(_status), do: "state-badge state-badge-danger"
 
   defp control_notice(%{ok: false, message: message, result_id: result_id}) do
     "#{message} (#{result_id})"

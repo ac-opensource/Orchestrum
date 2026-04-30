@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Linear.Client do
         }
         assignee {
           id
+          name
         }
         labels {
           nodes {
@@ -80,6 +81,7 @@ defmodule SymphonyElixir.Linear.Client do
         }
         assignee {
           id
+          name
         }
         labels {
           nodes {
@@ -517,6 +519,7 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      assignee_name: assignee_field(assignee, "name"),
       project: extract_project(issue),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
