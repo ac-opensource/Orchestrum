@@ -170,6 +170,92 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert ProjectConfig.terminal_state_names(%{project_id: "local-project"}) == ["Human Review", "Done"]
   end
 
+  test "project config health summary reports project setup states" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-project-health-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(test_root)
+      workspace_file = Path.join(test_root, "workspace-file")
+      File.write!(workspace_file, "not a directory")
+
+      healthy_project = %ProjectConfig{
+        id: "healthy",
+        name: "Healthy",
+        tracker_kind: "linear",
+        tracker_api_key: "token",
+        tracker_project_slug: "healthy-project",
+        workspace_root: test_root,
+        repository_path: nil,
+        active_states: ["Todo", "In Progress"],
+        terminal_states: ["Done"]
+      }
+
+      assert ProjectConfig.health_summary(healthy_project) == %{status: "healthy", problems: []}
+
+      assert %{status: "error", problems: [%{code: "missing_tracker_kind"}]} =
+               ProjectConfig.health_summary(%{healthy_project | tracker_kind: nil})
+
+      assert %{status: "error", problems: [%{code: "unsupported_tracker_kind"}]} =
+               ProjectConfig.health_summary(%{healthy_project | tracker_kind: "jira"})
+
+      assert %{status: "error", problems: [%{code: "missing_auth"}]} =
+               ProjectConfig.health_summary(%{healthy_project | tracker_api_key: nil})
+
+      assert %{status: "error", problems: [%{code: "missing_project_slug"}]} =
+               ProjectConfig.health_summary(%{healthy_project | tracker_project_slug: nil})
+
+      assert %{status: "error", problems: [%{code: "missing_project_slug"}]} =
+               ProjectConfig.health_summary(%{healthy_project | tracker_project_slug: " "})
+
+      assert ProjectConfig.health_summary(%{
+               healthy_project
+               | tracker_kind: "memory",
+                 tracker_api_key: nil,
+                 tracker_project_slug: nil
+             }) == %{status: "healthy", problems: []}
+
+      assert %{status: "error", problems: [%{code: "invalid_workspace_path"}]} =
+               ProjectConfig.health_summary(%{healthy_project | workspace_root: ""})
+
+      assert %{status: "error", problems: [%{code: "invalid_workspace_path"}]} =
+               ProjectConfig.health_summary(%{healthy_project | workspace_root: "bad\npath"})
+
+      assert %{status: "error", problems: [%{code: "invalid_workspace_path"}]} =
+               ProjectConfig.health_summary(%{healthy_project | workspace_root: workspace_file})
+
+      assert %{status: "error", problems: [%{code: "repository_setup_failed"}]} =
+               ProjectConfig.health_summary(%{healthy_project | repository_path: ""})
+
+      assert %{status: "error", problems: [%{code: "repository_setup_failed"}]} =
+               ProjectConfig.health_summary(%{healthy_project | repository_path: "bad\npath"})
+
+      assert %{status: "error", problems: [%{code: "repository_setup_failed"}]} =
+               ProjectConfig.health_summary(%{
+                 healthy_project
+                 | repository_path: Path.join(test_root, "missing-repository")
+               })
+
+      assert %{status: "error", problems: [%{code: "repository_setup_failed"}]} =
+               ProjectConfig.health_summary(%{healthy_project | repository_path: workspace_file})
+
+      assert ProjectConfig.health_summary(%{
+               healthy_project
+               | repository_path: "https://github.com/ac-opensource/Orchestrum"
+             }) == %{status: "healthy", problems: []}
+
+      assert ProjectConfig.health_summary(%{healthy_project | repository_path: 123}) == %{
+               status: "healthy",
+               problems: []
+             }
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "project summary reports local agent instruction file status" do
     test_root =
       Path.join(
