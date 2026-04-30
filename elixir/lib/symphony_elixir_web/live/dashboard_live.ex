@@ -48,6 +48,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:selected_task_issue, select_task_issue(payload, selected_task_issue_identifier))
       |> assign(:ticket_reply_errors, %{})
       |> assign(:ticket_reply_notices, %{})
+      |> assign(:workflow_selected_node_id, "content-research")
+      |> assign(:workflow_notice, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -165,6 +167,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("filter_tasks", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_workflow_node", %{"node-id" => node_id}, socket) do
+    selected_node = workflow_node(node_id) || default_workflow_node()
+
+    {:noreply,
+     socket
+     |> assign(:workflow_selected_node_id, selected_node.id)
+     |> assign(:workflow_notice, "#{selected_node.label} selected in mock builder.")}
+  end
+
+  @impl true
+  def handle_event("preview_workflow_node", _params, socket) do
+    selected_node = workflow_node(socket.assigns.workflow_selected_node_id) || default_workflow_node()
+
+    {:noreply,
+     assign(
+       socket,
+       :workflow_notice,
+       "Mock preview for #{selected_node.label}: #{selected_node.preview}"
+     )}
+  end
+
+  @impl true
+  def handle_event("mock_deploy_workflow", _params, socket) do
+    {:noreply,
+     assign(
+       socket,
+       :workflow_notice,
+       "Mock deploy staged #{length(workflow_canvas_nodes())} nodes locally. No tracker or orchestrator state changed."
+     )}
+  end
 
   @impl true
   def handle_event("filter_task_board", %{"task_board" => raw_filters}, socket) do
@@ -1393,59 +1427,173 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
-        <section id="controls" class="ops-panel" aria-labelledby="controls-title">
+        <section id="controls" class="ops-panel workflow-builder-section" aria-labelledby="controls-title">
           <div class="section-header">
             <div>
               <p class="section-kicker">Controls</p>
-              <h2 id="controls-title" class="section-title">Operator controls</h2>
-              <p class="section-copy">Manual actions that change runtime or workflow state.</p>
+              <h2 id="controls-title" class="section-title">Workflow logic builder</h2>
+              <p class="section-copy">Mock-only workflow composition for planning agent triggers, tasks, and branches.</p>
             </div>
+            <span class="timestamp-pill">Mock mode</span>
           </div>
 
-          <div class="control-grid">
-            <div class="control-row">
-              <div>
-                <h3 class="control-title">Queue refresh</h3>
-                <p class="control-copy">Poll Linear and reconcile current running state.</p>
+          <% selected_workflow_node = workflow_node(@workflow_selected_node_id) || default_workflow_node() %>
+
+          <div class="workflow-builder" data-workflow-builder="mock">
+            <aside class="workflow-library" aria-label="Node Library">
+              <div class="workflow-panel-header">
+                <h3>Node Library</h3>
+                <span class="state-badge">Mock</span>
               </div>
-              <button
-                type="button"
-                class="toolbar-button"
-                phx-click="refresh_now"
-                phx-disable-with="Refreshing"
-                data-confirm="Queue an immediate poll and reconciliation cycle?"
-                aria-label="Queue manual refresh"
-                title="Queue manual refresh"
-              >
-                <span class="button-icon" aria-hidden="true">
-                  <svg viewBox="0 0 20 20" focusable="false">
-                    <path d="M16 6v4h-4" />
-                    <path d="M4 14v-4h4" />
-                    <path d="M14.6 7A5.5 5.5 0 0 0 5 8.2" />
-                    <path d="M5.4 13A5.5 5.5 0 0 0 15 11.8" />
-                  </svg>
+
+              <section :for={group <- workflow_node_library()} class="workflow-library-group">
+                <p class="workflow-group-label"><%= group.label %></p>
+                <button
+                  :for={node <- group.nodes}
+                  type="button"
+                  class={workflow_library_button_class(node.id, @workflow_selected_node_id)}
+                  phx-click="select_workflow_node"
+                  phx-value-node-id={node.id}
+                  data-workflow-library-node={node.id}
+                >
+                  <span class={["workflow-node-mark", "workflow-node-mark-#{node.tone}"]} aria-hidden="true"><%= node.mark %></span>
+                  <span>
+                    <strong><%= node.label %></strong>
+                    <small><%= node.description %></small>
+                  </span>
+                </button>
+              </section>
+            </aside>
+
+            <section class="workflow-canvas" aria-label="Workflow canvas">
+              <div class="workflow-canvas-toolbar">
+                <div class="workflow-tool-group" aria-label="Canvas tools">
+                  <button type="button" title="Zoom in" aria-label="Zoom in">+</button>
+                  <button type="button" title="Zoom out" aria-label="Zoom out">-</button>
+                  <button type="button" title="Fit canvas" aria-label="Fit canvas">Fit</button>
+                </div>
+                <span class="workflow-live-status">
+                  <span></span>
+                  Status: LIVE_READY
                 </span>
-                <span>Refresh</span>
-              </button>
-            </div>
-
-            <div class="control-row">
-              <div>
-                <h3 class="control-title">Add project</h3>
-                <p class="control-copy">Open the workflow-backed project form.</p>
               </div>
+
+              <svg class="workflow-connector-map" viewBox="0 0 1000 420" aria-hidden="true" focusable="false">
+                <path d="M182 126 C 270 126, 300 196, 392 196" />
+                <path d="M578 196 C 650 196, 690 132, 770 132" />
+                <path d="M578 196 C 650 196, 690 292, 770 292" />
+              </svg>
+
+              <div class="workflow-canvas-board">
+                <button
+                  :for={node <- workflow_canvas_nodes()}
+                  type="button"
+                  class={workflow_canvas_node_class(node, @workflow_selected_node_id)}
+                  phx-click="select_workflow_node"
+                  phx-value-node-id={node.id}
+                  data-workflow-node-id={node.id}
+                >
+                  <span class="workflow-node-id"><%= node.identifier %></span>
+                  <span class={["workflow-node-mark", "workflow-node-mark-#{node.tone}"]} aria-hidden="true"><%= node.mark %></span>
+                  <strong><%= node.label %></strong>
+                  <small><%= node.canvas_detail %></small>
+                  <span class="workflow-node-progress" :if={node[:progress]}>
+                    <span style={"width: #{node.progress}%"}></span>
+                  </span>
+                  <span class="workflow-node-ports" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                  </span>
+                </button>
+              </div>
+            </section>
+
+            <aside class="workflow-properties" aria-label="Workflow properties">
+              <div class="workflow-panel-header">
+                <h3>Properties</h3>
+                <span class="muted mono"><%= selected_workflow_node.identifier %></span>
+              </div>
+
+              <div class="workflow-selected-card">
+                <span class={["workflow-node-mark", "workflow-node-mark-#{selected_workflow_node.tone}"]} aria-hidden="true">
+                  <%= selected_workflow_node.mark %>
+                </span>
+                <div>
+                  <p class="workflow-selected-title"><%= selected_workflow_node.label %></p>
+                  <p class="workflow-selected-meta">AGENT_TYPE: <%= selected_workflow_node.kind %></p>
+                </div>
+              </div>
+
+              <div class="workflow-property-stack">
+                <label>
+                  <span>System Prompt Override</span>
+                  <textarea readonly rows="4"><%= selected_workflow_node.prompt %></textarea>
+                </label>
+
+                <label>
+                  <span>Temperature (Precision)</span>
+                  <input type="range" min="0" max="100" value={selected_workflow_node.temperature} disabled />
+                </label>
+
+                <label>
+                  <span>Response Format</span>
+                  <select disabled>
+                    <option><%= selected_workflow_node.format %></option>
+                  </select>
+                </label>
+              </div>
+
               <button
+                id="workflow-preview-button"
                 type="button"
-                class="toolbar-button secondary"
-                phx-click="show_project_form"
-                aria-label="Open add project form"
-                title="Open add project form"
+                class="subtle-button workflow-preview-button"
+                phx-click="preview_workflow_node"
               >
-                <span class="button-icon" aria-hidden="true">+</span>
-                <span>Add project</span>
+                Preview Node Output
               </button>
-            </div>
+
+              <%= if @workflow_notice do %>
+                <p class="form-notice" role="status"><%= @workflow_notice %></p>
+              <% end %>
+
+              <div class="workflow-operator-controls">
+                <h3 class="control-title">Operator controls</h3>
+                <p class="control-copy">Existing runtime actions remain explicit and outside mock canvas editing.</p>
+                <div class="control-row">
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="refresh_now"
+                    phx-disable-with="Refreshing"
+                    data-confirm="Queue an immediate poll and reconciliation cycle?"
+                    aria-label="Queue manual refresh"
+                    title="Queue manual refresh"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    phx-click="show_project_form"
+                    aria-label="Open add project form"
+                    title="Open add project form"
+                  >
+                    Add project
+                  </button>
+                </div>
+              </div>
+            </aside>
           </div>
+
+          <button
+            type="button"
+            class="workflow-deploy-button"
+            phx-click="mock_deploy_workflow"
+            aria-label="Mock deploy workflow"
+            title="Mock deploy workflow"
+          >
+            +
+          </button>
         </section>
 
         <section id="settings" class="ops-panel" aria-labelledby="settings-title">
@@ -1553,6 +1701,169 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp nav_link_class(view, view), do: "section-nav-link section-nav-link-active"
   defp nav_link_class(_view, _current_view), do: "section-nav-link"
+
+  defp workflow_node_library do
+    [
+      %{
+        label: "Triggers",
+        nodes: [
+          %{
+            id: "incoming-webhook",
+            label: "Webhook",
+            description: "HTTP POST listener",
+            identifier: "#tr-0192",
+            kind: "WEBHOOK_TRIGGER",
+            tone: "trigger",
+            mark: "WH",
+            position: "trigger",
+            canvas_detail: "Endpoint: /v1/ingest",
+            prompt: "Validate inbound payloads, normalize fields, and emit a structured research request.",
+            temperature: 12,
+            format: "JSON_SCHEMA",
+            preview: "validated payload with topic, source, and urgency fields."
+          },
+          %{
+            id: "scheduled-run",
+            label: "Schedule",
+            description: "Cron-based execution",
+            identifier: "#tr-0440",
+            kind: "CRON_TRIGGER",
+            tone: "trigger",
+            mark: "SC",
+            position: "trigger",
+            canvas_detail: "Every weekday at 09:00",
+            prompt: "Create a scheduled run envelope and dispatch the workflow with the saved project context.",
+            temperature: 8,
+            format: "JSON_SCHEMA",
+            preview: "scheduled run envelope with project context."
+          }
+        ]
+      },
+      %{
+        label: "Agent Tasks",
+        nodes: [
+          %{
+            id: "content-research",
+            label: "Content Research",
+            description: "LLM content reduction",
+            identifier: "#agent-8842",
+            kind: "GPT-4O_MINI",
+            tone: "agent",
+            mark: "AI",
+            position: "agent",
+            canvas_detail: "65% sample progress",
+            progress: 65,
+            prompt: "Research the requested topic, extract decisions, and summarize useful evidence for the next branch.",
+            temperature: 34,
+            format: "JSON_SCHEMA",
+            preview: "JSON_READY summary with three evidence snippets."
+          },
+          %{
+            id: "web-research",
+            label: "Research",
+            description: "Autonomous web search",
+            identifier: "#agent-2711",
+            kind: "SEARCH_AGENT",
+            tone: "agent",
+            mark: "RS",
+            position: "agent",
+            canvas_detail: "Search depth: focused",
+            progress: 40,
+            prompt: "Collect public context, discard low-confidence sources, and return citations for review.",
+            temperature: 28,
+            format: "MARKDOWN_MD",
+            preview: "ranked source list and short confidence notes."
+          }
+        ]
+      },
+      %{
+        label: "Logic",
+        nodes: [
+          %{
+            id: "sentiment-filter",
+            label: "Sentiment Filter",
+            description: "If/Else branching",
+            identifier: "#logic-55",
+            kind: "IF_ELSE_BRANCH",
+            tone: "logic",
+            mark: "IF",
+            position: "logic",
+            canvas_detail: "Score > 0.85",
+            prompt: "Route high-confidence outputs to storage and failed confidence checks to manual review.",
+            temperature: 4,
+            format: "BOOLEAN_BRANCH",
+            preview: "PASS branch selected for confidence score 0.91."
+          },
+          %{
+            id: "retry-loop",
+            label: "Loop",
+            description: "Iterative processing",
+            identifier: "#loop-18",
+            kind: "ITERATION_LOOP",
+            tone: "logic",
+            mark: "LP",
+            position: "logic",
+            canvas_detail: "Max passes: 3",
+            prompt: "Retry low-confidence extraction up to three times before routing to manual review.",
+            temperature: 16,
+            format: "JSON_SCHEMA",
+            preview: "loop completed on pass 2 with improved confidence."
+          },
+          %{
+            id: "vector-store",
+            label: "Vector DB Store",
+            description: "Mock persistence sink",
+            identifier: "#sink-02",
+            kind: "VECTOR_SINK",
+            tone: "sink",
+            mark: "DB",
+            position: "sink",
+            canvas_detail: "Idle",
+            prompt: "Persist approved embeddings and attach workflow run metadata for retrieval.",
+            temperature: 0,
+            format: "JSON_SCHEMA",
+            preview: "mock write prepared with embedding id demo-248."
+          }
+        ]
+      }
+    ]
+  end
+
+  defp workflow_nodes do
+    workflow_node_library()
+    |> Enum.flat_map(& &1.nodes)
+  end
+
+  defp workflow_canvas_nodes do
+    ["incoming-webhook", "content-research", "sentiment-filter", "vector-store"]
+    |> Enum.map(&workflow_node/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp workflow_node(node_id) when is_binary(node_id) do
+    Enum.find(workflow_nodes(), &(&1.id == node_id))
+  end
+
+  defp workflow_node(_node_id), do: nil
+
+  defp default_workflow_node, do: workflow_node("content-research")
+
+  defp workflow_library_button_class(node_id, selected_node_id) do
+    [
+      "workflow-library-node",
+      node_id == selected_node_id && "workflow-library-node-selected"
+    ]
+  end
+
+  defp workflow_canvas_node_class(node, selected_node_id) do
+    [
+      "workflow-canvas-node",
+      "workflow-canvas-node-#{node.position}",
+      "workflow-canvas-node-#{node.tone}",
+      node.id == selected_node_id && "workflow-canvas-node-selected",
+      node.id == "vector-store" && "workflow-canvas-node-muted"
+    ]
+  end
 
   defp dashboard_nav_count("overview", payload, project_id),
     do: visible_task_count(payload, project_id)

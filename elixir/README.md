@@ -188,11 +188,11 @@ codex:
 The operational dashboard runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard shell at `/` with deep-linkable operator surfaces for Overview, Tasks,
-  Runs, Projects, Controls, Settings, and Diagnostics
+  Runs, Projects, the mock workflow builder under Controls, Settings, and Diagnostics
 - JSON API for operational debugging under `/api/v1/*`
 - Project/workspace/repository inventory, dashboard project creation, MCP server status visibility,
   next-poll visibility, manual refresh, tracker-backed replies for tickets needing human review,
-  and confirmed run/queue controls
+  confirmed run/queue controls, and local-only workflow builder mock interactions
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
