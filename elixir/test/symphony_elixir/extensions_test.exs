@@ -804,6 +804,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard shell routes deep-link persistent navigation surfaces" do
+    orchestrator_name = Module.concat(__MODULE__, :DashboardShellOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    for {path, view, expected} <- [
+          {"/", "overview", "Operations Dashboard"},
+          {"/overview", "overview", "Runtime summary"},
+          {"/tasks", "tasks", "Task board"},
+          {"/runs", "runs", "Running sessions"},
+          {"/projects", "projects", "Project command center"},
+          {"/controls", "controls", "Operator controls"},
+          {"/settings", "settings", "Runtime settings"},
+          {"/diagnostics", "diagnostics", "Diagnostics"}
+        ] do
+      {:ok, _view, html} = live(build_conn(), path)
+
+      assert html =~ expected
+      assert html =~ ~s(data-dashboard-view="#{view}")
+      assert html =~ ~s(aria-current="page")
+    end
+  end
+
   test "dashboard liveview opens running and retry detail routes with long timeline messages" do
     previous_log_file = Application.get_env(:symphony_elixir, :log_file)
     Application.put_env(:symphony_elixir, :log_file, Path.join(System.tmp_dir!(), "missing-liveview-log.log"))
@@ -1111,10 +1141,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-BETA"
     assert html =~ "MT-BETA-RETRY"
     refute html =~ "MT-ALPHA"
-    assert html =~ ~s(href="/?project=beta#tasks")
-    assert html =~ ~s(href="/?project=beta#runs")
-    assert html =~ ~s(href="/?project=beta#settings")
-    assert html =~ ~s(href="/?project=beta#diagnostics")
+    assert html =~ ~s(href="/tasks?project=beta")
+    assert html =~ ~s(href="/runs?project=beta")
+    assert html =~ ~s(href="/settings?project=beta")
+    assert html =~ ~s(href="/diagnostics?project=beta")
 
     html =
       view
