@@ -39,6 +39,86 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server accepts workspaces under configured project roots" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-project-cwd-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      default_workspace_root = Path.join(test_root, "default-workspaces")
+      project_workspace_root = Path.join(test_root, "project-workspaces")
+      workspace = Path.join(project_workspace_root, "AC-200")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-200"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-200"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      File.write!(Workflow.workflow_file_path(), """
+      ---
+      tracker:
+        kind: memory
+        project_slug: "default"
+      workspace:
+        root: "#{default_workspace_root}"
+      projects:
+        - id: "project"
+          tracker:
+            project_slug: "project"
+          workspace:
+            root: "#{project_workspace_root}"
+      codex:
+        command: "#{codex_binary} app-server"
+      ---
+      Prompt
+      """)
+
+      assert :ok = WorkflowStore.force_reload()
+
+      issue = %Issue{
+        id: "issue-project-cwd",
+        identifier: "AC-200",
+        title: "Project workspace root",
+        state: "In Progress",
+        project: %{slug: "project"}
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "guard", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects symlink escape cwd paths under the workspace root" do
     test_root =
       Path.join(

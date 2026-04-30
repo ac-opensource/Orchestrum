@@ -147,27 +147,14 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
-    expanded_root_prefix = expanded_root <> "/"
 
-    with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
-         {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
-      canonical_root_prefix = canonical_root <> "/"
+    case PathSafety.canonicalize(expanded_workspace) do
+      {:ok, canonical_workspace} ->
+        Config.project_configs()
+        |> Enum.map(& &1.workspace_root)
+        |> Enum.uniq()
+        |> validate_workspace_cwd_roots(expanded_workspace, canonical_workspace)
 
-      cond do
-        canonical_workspace == canonical_root ->
-          {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
-
-        String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
-          {:ok, canonical_workspace}
-
-        String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
-          {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, canonical_root}}
-
-        true ->
-          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, canonical_root}}
-      end
-    else
       {:error, {:path_canonicalize_failed, path, reason}} ->
         {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
     end
@@ -185,6 +172,70 @@ defmodule SymphonyElixir.Codex.AppServer do
       true ->
         {:ok, workspace}
     end
+  end
+
+  defp validate_workspace_cwd_roots(workspace_roots, expanded_workspace, canonical_workspace) do
+    fallback =
+      workspace_roots
+      |> List.first()
+      |> case do
+        root when is_binary(root) ->
+          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, Path.expand(root)}}
+
+        _root ->
+          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, nil}}
+      end
+
+    Enum.reduce_while(workspace_roots, fallback, fn workspace_root, current_error ->
+      case validate_workspace_cwd_root(expanded_workspace, canonical_workspace, workspace_root) do
+        {:ok, _canonical_workspace} = ok ->
+          {:halt, ok}
+
+        {:error, {:invalid_workspace_cwd, :workspace_root, _path} = reason} ->
+          {:halt, {:error, reason}}
+
+        {:error, {:invalid_workspace_cwd, :symlink_escape, _path, _root} = reason} ->
+          {:halt, {:error, reason}}
+
+        {:error, {:invalid_workspace_cwd, :path_unreadable, _path, _reason} = reason} ->
+          {:cont, current_error || {:error, reason}}
+
+        {:error, _reason} ->
+          {:cont, current_error}
+      end
+    end)
+  end
+
+  defp validate_workspace_cwd_root(expanded_workspace, canonical_workspace, workspace_root)
+       when is_binary(workspace_root) do
+    expanded_root = Path.expand(workspace_root)
+    expanded_root_prefix = expanded_root <> "/"
+
+    case PathSafety.canonicalize(expanded_root) do
+      {:ok, canonical_root} ->
+        canonical_root_prefix = canonical_root <> "/"
+
+        cond do
+          canonical_workspace == canonical_root ->
+            {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
+
+          String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
+            {:ok, canonical_workspace}
+
+          String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
+            {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, canonical_root}}
+
+          true ->
+            {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, canonical_root}}
+        end
+
+      {:error, {:path_canonicalize_failed, path, reason}} ->
+        {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
+    end
+  end
+
+  defp validate_workspace_cwd_root(_expanded_workspace, canonical_workspace, _workspace_root) do
+    {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, nil}}
   end
 
   defp start_port(workspace, nil) do
