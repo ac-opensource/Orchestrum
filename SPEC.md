@@ -1582,6 +1582,112 @@ Minimum endpoints:
     }
     ```
 
+- `GET /api/v1/task-board`
+  - Returns tracker issue data for configured projects plus the orchestrator runtime overlay needed
+    by a task board.
+  - Supported query parameters:
+    - `state` / `states`: state names, either repeated or comma-separated. Defaults to configured
+      active states for all projects.
+    - `project_id` / `project`: configured project id/name or tracker project id/name.
+    - `project_slug`: configured tracker project slug or tracker project slug.
+    - `limit`: positive integer page size, capped by the implementation.
+    - `after`: zero-based offset for the next page.
+  - Suggested response shape:
+
+    ```json
+    {
+      "generated_at": "2026-02-24T20:15:30Z",
+      "filters": {
+        "project_id": null,
+        "project_slug": "project-slug",
+        "states": ["Todo", "In Progress"],
+        "limit": 50,
+        "after": 0
+      },
+      "pagination": {
+        "limit": 50,
+        "after": 0,
+        "next_after": null,
+        "total": 1
+      },
+      "projects": [],
+      "runtime": {
+        "status": "available"
+      },
+      "tasks": [
+        {
+          "issue": {
+            "id": "abc123",
+            "identifier": "MT-649",
+            "title": "Implement API",
+            "description": "...",
+            "priority": 2,
+            "state": "In Progress",
+            "branch_name": "feature/mt-649-api",
+            "url": "https://linear.app/...",
+            "assignee_id": "user-id",
+            "labels": ["feature"],
+            "blocked_by": [],
+            "assigned_to_worker": true,
+            "created_at": "2026-02-24T19:00:00Z",
+            "updated_at": "2026-02-24T20:00:00Z"
+          },
+          "project": {
+            "id": "tracker-project-id",
+            "name": "Project",
+            "slug": "project-slug"
+          },
+          "configured_project": {
+            "id": "project-slug",
+            "name": "project-slug",
+            "tracker_kind": "linear",
+            "tracker_project_slug": "project-slug"
+          },
+          "runtime": {
+            "status": "running",
+            "running": {},
+            "retry": null
+          }
+        }
+      ]
+    }
+    ```
+
+- `POST /api/v1/control/<control_action>`
+  - Invokes an explicit orchestrator control boundary. Supported action names are
+    `pause`, `resume`, `dispatch-now`, `stop`, `cancel`, `retry-now`, `clear-retry`, and
+    `release-claim`.
+  - Issue-scoped actions accept `issue_id` or `issue_identifier` in the request body. `dispatch-now`
+    can be called without issue fields.
+  - Successful responses use a success envelope:
+
+    ```json
+    {
+      "ok": true,
+      "action": "dispatch-now",
+      "result": {
+        "status": "queued",
+        "queued": true,
+        "coalesced": false,
+        "requested_at": "2026-02-24T20:15:30Z",
+        "operations": ["poll", "reconcile"]
+      }
+    }
+    ```
+
+  - Errors use an explicit error envelope:
+
+    ```json
+    {
+      "ok": false,
+      "action": "clear-retry",
+      "error": {
+        "code": "invalid_control_request",
+        "message": "issue_id or issue_identifier is required"
+      }
+    }
+    ```
+
 API design notes:
 
 - The JSON shapes above are the RECOMMENDED baseline for interoperability and debugging ergonomics.
