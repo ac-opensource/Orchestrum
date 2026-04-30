@@ -372,9 +372,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
             data-dashboard-view="settings"
             aria-current={if @current_view == "settings", do: "page", else: nil}
           >
+            <span class="material-symbols-outlined" aria-hidden="true">settings</span>
             System Settings
           </.link>
-          <a href="/api/v1/state">State API</a>
+          <a href="/api/v1/state">
+            <span class="material-symbols-outlined" aria-hidden="true">data_object</span>
+            State API
+          </a>
         </div>
       </aside>
 
@@ -390,18 +394,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
           </div>
 
-          <div class="dashboard-search" role="search">
+          <form
+            class="dashboard-search"
+            action={dashboard_project_path(dashboard_view_path("tasks"), @selected_project_id)}
+            method="get"
+            role="search"
+          >
             <span class="material-symbols-outlined" aria-hidden="true">search</span>
-            <input type="search" placeholder="Search operational logs..." aria-label="Search operational logs" />
-          </div>
+            <input :if={@selected_project_id != "all"} type="hidden" name="project" value={@selected_project_id} />
+            <input
+              name="task_board[query]"
+              type="search"
+              autocomplete="off"
+              aria-label="Search operational logs"
+              placeholder="Search operational logs..."
+            />
+          </form>
 
           <div class="toolbar" aria-label="Dashboard actions">
-            <button type="button" class="icon-button header-icon" aria-label="Notifications" title="Notifications">
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("diagnostics"), @selected_project_id)}
+              class="icon-button header-icon"
+              aria-label="Notifications"
+              title="Notifications"
+            >
               <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
-            </button>
-            <button type="button" class="icon-button header-icon" aria-label="Sensors" title="Sensors">
+            </.link>
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("runs"), @selected_project_id)}
+              class="icon-button header-icon"
+              aria-label="Sensors"
+              title="Sensors"
+            >
               <span class="material-symbols-outlined" aria-hidden="true">sensors</span>
-            </button>
+            </.link>
             <.link patch={dashboard_project_path(dashboard_view_path("controls"), @selected_project_id)} class="deploy-button">
               <span>Deploy Agent</span>
             </.link>
@@ -449,9 +475,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <%= if @control_notice do %>
               <span class="muted"><%= @control_notice %></span>
             <% end %>
-            <button type="button" class="icon-button header-icon" aria-label="Account" title="Account">
+            <.link
+              patch={dashboard_project_path(dashboard_view_path("projects"), @selected_project_id)}
+              class="icon-button header-icon"
+              aria-label="Account"
+              title="Account"
+            >
               <span class="material-symbols-outlined" aria-hidden="true">account_circle</span>
-            </button>
+            </.link>
           </div>
         </div>
       </header>
@@ -625,7 +656,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section :if={@current_view == "overview"} id="overview" class="ops-panel" aria-labelledby="overview-title">
           <div class="section-header">
             <div>
-              <p class="section-kicker">Overview</p>
+              <p class="section-kicker">System Pulse</p>
               <h2 id="overview-title" class="section-title">Runtime summary</h2>
             </div>
             <span class="timestamp-pill">Generated <%= format_generated_at(@payload.generated_at) %></span>
