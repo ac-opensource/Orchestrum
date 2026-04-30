@@ -1239,6 +1239,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          mcp_servers: mcp_servers_snapshot(Map.get(metadata, :mcp_servers, %{})),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1312,11 +1313,123 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
+        mcp_servers: mcp_servers_for_update(Map.get(running_entry, :mcp_servers, %{}), update)
       }),
       token_delta
     }
   end
+
+  defp mcp_servers_snapshot(servers) when is_map(servers) do
+    servers
+    |> Map.values()
+    |> Enum.sort_by(fn server ->
+      server |> Map.get(:name, "") |> to_string() |> String.downcase()
+    end)
+  end
+
+  defp mcp_servers_snapshot(_servers), do: []
+
+  defp mcp_servers_for_update(existing, update) do
+    existing = if is_map(existing), do: existing, else: %{}
+
+    case mcp_server_status_update(update) do
+      nil ->
+        existing
+
+      %{name: name} = server ->
+        Map.put(existing, name, server)
+    end
+  end
+
+  defp mcp_server_status_update(update) when is_map(update) do
+    payload = Map.get(update, :payload) || Map.get(update, "payload")
+    method = map_path(payload, ["method"]) || map_path(payload, [:method])
+
+    with true <- method in ["codex/event/mcp_startup_update", "mcp_startup_update"],
+         %{} = msg <- map_path(payload, ["params", "msg"]) || map_path(payload, [:params, :msg]),
+         server when is_binary(server) <- msg |> map_value(["server", :server]) |> present_string() do
+      status = mcp_status_state(msg) || "updated"
+      detail = mcp_status_detail(msg)
+
+      %{
+        name: server,
+        status: status,
+        detail: detail,
+        updated_at: Map.get(update, :timestamp) || Map.get(update, "timestamp")
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp mcp_status_state(msg) when is_map(msg) do
+    status = map_value(msg, ["status", :status])
+
+    state =
+      case status do
+        %{} -> map_value(status, ["state", :state])
+        value -> value
+      end
+
+    present_string(state)
+  end
+
+  defp mcp_status_detail(msg) when is_map(msg) do
+    status = map_value(msg, ["status", :status])
+
+    [
+      map_value(msg, ["message", :message]),
+      map_value(msg, ["error", :error]),
+      map_value(msg, ["detail", :detail]),
+      map_value(msg, ["details", :details]),
+      map_value(msg, ["reason", :reason]),
+      status_detail(status)
+    ]
+    |> Enum.find_value(&present_string/1)
+  end
+
+  defp status_detail(status) when is_map(status) do
+    [
+      map_value(status, ["message", :message]),
+      map_value(status, ["error", :error]),
+      map_value(status, ["detail", :detail]),
+      map_value(status, ["details", :details]),
+      map_value(status, ["reason", :reason])
+    ]
+    |> Enum.find_value(&present_string/1)
+  end
+
+  defp status_detail(_status), do: nil
+
+  defp present_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp present_string(nil), do: nil
+  defp present_string(value) when is_atom(value), do: value |> Atom.to_string() |> present_string()
+  defp present_string(value) when is_integer(value), do: Integer.to_string(value)
+  defp present_string(value) when is_float(value), do: Float.to_string(value)
+  defp present_string(value) when is_map(value) or is_list(value), do: inspect(value)
+  defp present_string(_value), do: nil
+
+  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  end
+
+  defp map_value(_map, _keys), do: nil
+
+  defp map_path(map, keys) when is_map(map) and is_list(keys) do
+    Enum.reduce_while(keys, map, fn key, current ->
+      case current do
+        %{} -> {:cont, Map.get(current, key)}
+        _ -> {:halt, nil}
+      end
+    end)
+  end
+
+  defp map_path(_map, _keys), do: nil
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
