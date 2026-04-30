@@ -1293,7 +1293,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Projects"
+    assert html =~ "Agent Config"
+    assert html =~ "Configured agents"
     assert html =~ "Project command center"
     assert html =~ "aria-label=\"Add project\""
     assert html =~ "Git identity"
