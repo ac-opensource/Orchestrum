@@ -835,6 +835,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".command-rail"
     assert dashboard_css =~ ".section-nav"
     assert dashboard_css =~ ".segmented-control"
+    assert dashboard_css =~ ".dashboard-view-controls #controls"
     assert dashboard_css =~ ":focus-visible"
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
@@ -873,32 +874,23 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Command Center"
     assert html =~ "Orchestrum"
+    assert html =~ "AION-OS"
+    assert html =~ "Search operational logs"
+    assert html =~ "New Deployment"
+    assert html =~ "Deploy Agent"
+    assert html =~ "material-symbols-outlined"
     assert html =~ "aria-label=\"Dashboard sections\""
     assert html =~ "Command Center"
     assert html =~ "Task Manager"
     assert html =~ "Agent Config"
     assert html =~ "Workflow Builder"
     assert html =~ "Audit Logs"
-    assert html =~ "Runtime audit stream"
-    assert html =~ "ORCHESTRUM_AUDIT_STREAM"
-    assert html =~ "Inspector: MT-HTTP"
-    assert html =~ "Token dynamics"
-    assert html =~ "Bottleneck analysis"
-    assert html =~ "Worker node health"
-    assert html =~ "Task board"
-    assert html =~ "Project command center"
-    assert html =~ "Operator controls"
-    assert html =~ "Runtime settings"
-    assert html =~ "Diagnostics"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "aria-label=\"Copy session ID for MT-HTTP\""
-    assert html =~ "Codex update"
     refute html =~ "ticket-reply-form"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
@@ -907,16 +899,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "aria-label=\"Filter task board\""
     assert html =~ "phx-value-filter=\"running\""
     assert html =~ "phx-value-filter=\"retrying\""
-    assert html =~ "MCP servers"
-    assert html =~ "No MCP servers reported."
+    refute html =~ "Task board"
+    refute html =~ "Runtime audit stream"
+    refute html =~ "Project command center"
+    refute html =~ "Operator controls"
+    refute html =~ "Runtime settings"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
     assert html =~ "Pause polling"
-    assert html =~ "Dispatch now"
-    assert html =~ "Stop"
-    assert html =~ "Retry now"
-    assert html =~ "Clear"
     assert html =~ "data-confirm="
     assert html =~ "phx-disable-with=\"Working\""
 
@@ -925,23 +916,19 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> element("button[phx-value-filter=\"retrying\"]")
       |> render_click()
 
-    retrying_tasks_html = html_section(retrying_html, "tasks", "mcp-servers")
-
     assert retrying_html =~ "aria-pressed=\"true\""
-    assert retrying_tasks_html =~ "MT-RETRY"
-    assert retrying_tasks_html =~ "queue-label-retrying"
-    refute retrying_tasks_html =~ "queue-label-running"
+    assert retrying_html =~ "MT-RETRY"
+    assert retrying_html =~ "queue-label-retrying"
+    refute retrying_html =~ "queue-label-running"
 
     running_html =
       view
       |> element("button[phx-value-filter=\"running\"]")
       |> render_click()
 
-    running_tasks_html = html_section(running_html, "tasks", "mcp-servers")
-
     assert running_html =~ "aria-pressed=\"true\""
-    assert running_tasks_html =~ "MT-HTTP"
-    refute running_tasks_html =~ "MT-RETRY"
+    assert running_html =~ "MT-HTTP"
+    refute running_html =~ "MT-RETRY"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -1065,6 +1052,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
       assert html =~ expected
       assert html =~ ~s(data-dashboard-view="#{view}")
+      assert html =~ "dashboard-view-#{view}"
       assert html =~ ~s(aria-current="page")
     end
   end
@@ -1213,7 +1201,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/diagnostics")
+    assert html =~ "Runtime audit stream"
+    assert html =~ "ORCHESTRUM_AUDIT_STREAM"
+    assert html =~ "Inspector: MT-HTTP"
+    assert html =~ "Token dynamics"
+    assert html =~ "Bottleneck analysis"
+    assert html =~ "Worker node health"
     assert html =~ "MCP servers"
     assert html =~ "linear"
     assert html =~ "failed"
@@ -1232,8 +1226,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "Global polling paused (ctrl-live-pause)"
 
+    {:ok, runs_view, _runs_html} = live(build_conn(), "/runs")
+
     html =
-      view
+      runs_view
       |> element(~s(button[phx-value-action="cancel_run"][phx-value-target="MT-HTTP"]))
       |> render_click()
 
@@ -1259,7 +1255,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/runs")
     assert html =~ "ticket-reply-form-issue-http"
     assert html =~ "Reply to MT-HTTP"
 
@@ -1298,7 +1294,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/projects")
     assert html =~ "Projects"
     assert html =~ "Project command center"
     assert html =~ "aria-label=\"Add project\""
@@ -1407,7 +1403,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/?project=beta")
+    {:ok, _overview_view, html} = live(build_conn(), "/?project=beta")
     assert html =~ "Beta Project"
     assert html =~ "MT-BETA"
     assert html =~ "MT-BETA-RETRY"
@@ -1417,8 +1413,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(href="/settings?project=beta")
     assert html =~ ~s(href="/diagnostics?project=beta")
 
+    {:ok, project_view, _project_html} = live(build_conn(), "/projects?project=beta")
+
     html =
-      view
+      project_view
       |> element("button[phx-value-project-id=\"beta\"]", "Refresh")
       |> render_click()
 
@@ -1743,14 +1741,6 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
-
-  defp html_section(html, section_id, next_section_id) do
-    html
-    |> String.split(~s(<section id="#{section_id}"), parts: 2)
-    |> List.last()
-    |> String.split(~s(<section id="#{next_section_id}"), parts: 2)
-    |> hd()
-  end
 
   defp ensure_workflow_store_running do
     if Process.whereis(WorkflowStore) do
