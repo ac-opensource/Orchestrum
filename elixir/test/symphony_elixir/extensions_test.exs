@@ -1044,7 +1044,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           {"/tasks", "tasks", "Task board"},
           {"/runs", "runs", "Running sessions"},
           {"/projects", "projects", "Project command center"},
-          {"/controls", "controls", "Operator controls"},
+          {"/controls", "controls", "Workflow logic builder"},
           {"/settings", "settings", "Runtime settings"},
           {"/diagnostics", "diagnostics", "Runtime audit stream"}
         ] do
@@ -1055,6 +1055,47 @@ defmodule SymphonyElixir.ExtensionsTest do
       assert html =~ "dashboard-view-#{view}"
       assert html =~ ~s(aria-current="page")
     end
+  end
+
+  test "dashboard workflow builder mock interactions update selected node locally" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowBuilderOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/controls")
+
+    assert html =~ "Workflow logic builder"
+    assert html =~ "AGENT_TYPE: GPT-4O_MINI"
+
+    html =
+      view
+      |> element(~s([data-workflow-node-id="sentiment-filter"]))
+      |> render_click()
+
+    assert html =~ "Sentiment Filter selected in mock builder."
+    assert html =~ "AGENT_TYPE: IF_ELSE_BRANCH"
+
+    html =
+      view
+      |> element("#workflow-preview-button")
+      |> render_click()
+
+    assert html =~ "Mock preview for Sentiment Filter: PASS branch selected"
+
+    html =
+      view
+      |> element(~s(button[aria-label="Mock deploy workflow"]))
+      |> render_click()
+
+    assert html =~ "No tracker or orchestrator state changed"
+    refute_receive {:graphql_called, _query, _variables}
   end
 
   test "dashboard liveview opens running and retry detail routes with long timeline messages" do
@@ -1477,6 +1518,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
     assert dashboard_css.body =~ ":root {"
+
+    dashboard = Req.get!("http://127.0.0.1:#{port}/controls")
+    assert dashboard.status == 200
+    assert dashboard.body =~ "Workflow logic builder"
+    assert dashboard.body =~ ~s(data-workflow-builder="mock")
 
     phoenix_js = Req.get!("http://127.0.0.1:#{port}/vendor/phoenix/phoenix.js")
     assert phoenix_js.status == 200
