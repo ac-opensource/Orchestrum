@@ -18,6 +18,7 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying)
           },
           projects: Enum.map(Config.project_configs(), &ProjectConfig.summary/1),
+          mcp_servers: mcp_server_payloads(snapshot.running),
           polling: snapshot.polling,
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
@@ -112,6 +113,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
+      mcp_servers: mcp_servers_for_entry(entry),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -145,6 +147,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
+      mcp_servers: mcp_servers_for_entry(running),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
@@ -201,6 +204,89 @@ defmodule SymphonyElixirWeb.Presenter do
     |> Enum.reject(&is_nil(&1.at))
   end
 
+  defp mcp_server_payloads(running_entries) when is_list(running_entries) do
+    running_entries
+    |> Enum.flat_map(fn entry ->
+      entry
+      |> mcp_servers_for_entry()
+      |> Enum.map(&Map.merge(&1, mcp_issue_context(entry)))
+    end)
+    |> Enum.sort_by(fn server ->
+      {String.downcase(server.name || ""), server.issue_identifier || ""}
+    end)
+  end
+
+  defp mcp_server_payloads(_running_entries), do: []
+
+  defp mcp_servers_for_entry(entry) when is_map(entry) do
+    entry
+    |> Map.get(:mcp_servers, [])
+    |> normalize_mcp_servers()
+  end
+
+  defp mcp_servers_for_entry(_entry), do: []
+
+  defp normalize_mcp_servers(servers) when is_map(servers), do: servers |> Map.values() |> normalize_mcp_servers()
+
+  defp normalize_mcp_servers(servers) when is_list(servers) do
+    servers
+    |> Enum.map(&mcp_server_payload/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn server -> String.downcase(server.name || "") end)
+  end
+
+  defp normalize_mcp_servers(_servers), do: []
+
+  defp mcp_server_payload(server) when is_map(server) do
+    name = server |> map_value(["name", :name]) |> string_or_nil()
+
+    if is_nil(name) do
+      nil
+    else
+      status = server |> map_value(["status", :status]) |> string_or_nil()
+      detail = server |> map_value(["detail", :detail, "message", :message, "error", :error]) |> string_or_nil()
+
+      %{
+        name: name,
+        status: status || "updated",
+        detail: detail,
+        action: server |> map_value(["action", :action]) |> string_or_nil() || mcp_action(status, detail),
+        updated_at: server |> map_value(["updated_at", :updated_at]) |> timestamp_payload()
+      }
+    end
+  end
+
+  defp mcp_server_payload(_server), do: nil
+
+  defp mcp_issue_context(entry) do
+    %{
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: Map.get(entry, :identifier)
+    }
+  end
+
+  defp mcp_action(status, detail) do
+    text =
+      [status, detail]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+      |> String.downcase()
+
+    cond do
+      text == "" ->
+        nil
+
+      String.contains?(text, ["auth", "oauth", "credential", "login", "token", "permission", "unauthorized"]) ->
+        "re_auth"
+
+      String.contains?(text, ["config", "missing", "not found", "failed", "error", "invalid"]) ->
+        "re_config"
+
+      true ->
+        nil
+    end
+  end
+
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
 
@@ -220,4 +306,24 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp timestamp_payload(value), do: iso8601(value) || string_or_nil(value)
+
+  defp string_or_nil(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp string_or_nil(nil), do: nil
+  defp string_or_nil(value) when is_atom(value), do: value |> Atom.to_string() |> string_or_nil()
+  defp string_or_nil(value) when is_integer(value), do: Integer.to_string(value)
+  defp string_or_nil(value) when is_float(value), do: Float.to_string(value)
+  defp string_or_nil(value) when is_map(value) or is_list(value), do: inspect(value)
+  defp string_or_nil(_value), do: nil
+
+  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  end
+
+  defp map_value(_map, _keys), do: nil
 end
