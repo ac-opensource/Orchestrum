@@ -164,6 +164,7 @@ pre,
 .dashboard-shell {
   display: grid;
   gap: 1rem;
+  width: 100%;
   min-height: 100vh;
   padding: calc(var(--topbar-height) + 1.5rem) 1.5rem 2rem calc(var(--rail-width) + 1.5rem);
   background:
@@ -171,6 +172,10 @@ pre,
     linear-gradient(90deg, rgba(255, 255, 255, 0.026) 1px, transparent 1px),
     var(--page);
   background-size: 32px 32px;
+}
+
+.dashboard-shell > * {
+  min-width: 0;
 }
 
 .dashboard-header,
@@ -597,6 +602,10 @@ pre,
   flex-wrap: wrap;
 }
 
+.section-header > * {
+  min-width: 0;
+}
+
 .section-title {
   margin: 0.2rem 0 0;
   font-family: "Space Grotesk", "Inter", "SF Pro Display", sans-serif;
@@ -614,6 +623,7 @@ pre,
 .timestamp-pill {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   min-height: 1.85rem;
   padding: 0.22rem 0.52rem;
   border: 1px solid var(--line);
@@ -1785,6 +1795,8 @@ pre,
   }
 
   .dashboard-shell {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-x: hidden;
     padding: 0.75rem;
   }
 
@@ -1808,13 +1820,37 @@ pre,
 
   .dashboard-header {
     position: static;
+    width: 100%;
+    max-width: 100%;
     min-height: auto;
+    overflow: hidden;
     border: 1px solid var(--line-soft);
     border-radius: 6px;
   }
 
   .dashboard-header-main {
     display: grid;
+  }
+
+  .dashboard-header-main > *,
+  .dashboard-heading,
+  .dashboard-search,
+  .toolbar {
+    min-width: 0;
+  }
+
+  .dashboard-copy {
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-view-overview #overview,
+  .dashboard-view-tasks #tasks,
+  .dashboard-view-runs #runs,
+  .dashboard-view-projects #projects,
+  .dashboard-view-controls #controls,
+  .dashboard-view-settings #settings,
+  .dashboard-view-diagnostics #diagnostics {
+    order: initial;
   }
 
   .dashboard-search {
@@ -1880,6 +1916,11 @@ pre,
     font-size: 1.28rem;
   }
 
+  .timestamp-pill {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .metric-grid {
     grid-template-columns: 1fr;
   }
@@ -1912,12 +1953,20 @@ pre,
   }
 
   .segmented-control,
+  .toolbar,
   .control-row,
   .setting-row {
     display: grid;
   }
 
+  .toolbar {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .segmented-button,
+  .deploy-button,
+  .icon-button,
   .toolbar-button,
   .subtle-button,
   .form-actions button {
