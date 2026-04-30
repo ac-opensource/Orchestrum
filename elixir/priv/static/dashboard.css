@@ -378,6 +378,10 @@ pre,
   min-width: 980px;
 }
 
+.project-settings-table {
+  min-width: 1120px;
+}
+
 .data-table th {
   padding: 0 0.5rem 0.75rem 0;
   text-align: left;

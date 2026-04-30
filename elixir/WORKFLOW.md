@@ -17,6 +17,19 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/code/orchestrum-workspaces
+# Optional per-project overrides:
+# projects:
+#   - id: orchestrum
+#     tracker:
+#       project_slug: "symphony-86cfeb36264a"
+#     workspace:
+#       root: ~/code/orchestrum-workspaces
+#     repository:
+#       path: https://github.com/ac-opensource/Orchestrum
+#     git:
+#       name: ac-opensource
+#       username: ac-opensource
+#       email: aarconcepcion@gmail.com
 observability:
   snapshot_timeout_ms: 15000
 server:

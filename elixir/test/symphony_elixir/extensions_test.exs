@@ -633,6 +633,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Projects"
     assert html =~ "aria-label=\"Add project\""
+    assert html =~ "Git identity"
+    assert html =~ "Agent instructions"
 
     html =
       view
@@ -640,6 +642,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert html =~ "Linear project slug"
+    assert html =~ "Local directory"
+    assert html =~ "Remote repository"
+    assert html =~ "Git name"
 
     html =
       view
@@ -654,13 +659,23 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> form("#add-project-form",
         project: %{
           "name" => "Wallet Android",
-          "project_slug" => "wallet-android"
+          "project_slug" => "wallet-android",
+          "workspace_root" => "/tmp/wallet-workspaces",
+          "repository_path" => "https://github.com/ac-opensource/wallet-android",
+          "git_name" => "Wallet Bot",
+          "git_username" => "wallet-bot",
+          "git_email" => "wallet-bot@example.com"
         }
       )
       |> render_submit()
 
     assert html =~ "Wallet Android"
     assert html =~ "wallet-android"
+    assert html =~ "/tmp/wallet-workspaces"
+    assert html =~ "https://github.com/ac-opensource/wallet-android"
+    assert html =~ "name: Wallet Bot"
+    assert html =~ "username: wallet-bot"
+    assert html =~ "email: wallet-bot@example.com"
     assert html =~ "Wallet Android added"
 
     assert Enum.map(Config.project_configs(), & &1.tracker_project_slug) == ["project", "wallet-android"]
@@ -673,7 +688,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{
                "id" => "wallet-android",
                "name" => "Wallet Android",
-               "tracker" => %{"project_slug" => "wallet-android"}
+               "tracker" => %{"project_slug" => "wallet-android"},
+               "workspace" => %{"root" => "/tmp/wallet-workspaces"},
+               "repository" => %{"path" => "https://github.com/ac-opensource/wallet-android"},
+               "git" => %{
+                 "name" => "Wallet Bot",
+                 "username" => "wallet-bot",
+                 "email" => "wallet-bot@example.com"
+               }
              }
            ] = config["projects"]
 

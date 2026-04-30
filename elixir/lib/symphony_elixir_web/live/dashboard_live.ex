@@ -209,6 +209,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <span>Linear project slug</span>
                   <input name="project[project_slug]" value={@project_form["project_slug"] || ""} autocomplete="off" />
                 </label>
+                <label>
+                  <span>Local directory</span>
+                  <input name="project[workspace_root]" value={@project_form["workspace_root"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Remote repository</span>
+                  <input name="project[repository_path]" value={@project_form["repository_path"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git name</span>
+                  <input name="project[git_name]" value={@project_form["git_name"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git username</span>
+                  <input name="project[git_username]" value={@project_form["git_username"] || ""} autocomplete="off" />
+                </label>
+                <label>
+                  <span>Git email</span>
+                  <input name="project[git_email]" value={@project_form["git_email"] || ""} autocomplete="off" />
+                </label>
               </div>
               <%= if @project_form_error do %>
                 <p class="form-error"><%= @project_form_error %></p>
@@ -224,13 +244,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No configured projects.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
+              <table class="data-table project-settings-table">
                 <thead>
                   <tr>
                     <th>Project</th>
                     <th>Tracker</th>
-                    <th>Workspace root</th>
-                    <th>Repository</th>
+                    <th>Local directory</th>
+                    <th>Remote repository</th>
+                    <th>Git identity</th>
+                    <th>Agent instructions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -239,6 +261,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></td>
                     <td class="mono"><%= project.workspace_root %></td>
                     <td class="mono"><%= project.repository_path || "default hook" %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span :for={line <- git_identity_lines(project)} class="mono"><%= line %></span>
+                      </div>
+                    </td>
+                    <td><%= agent_instruction_status(project) %></td>
                   </tr>
                 </tbody>
               </table>
@@ -444,13 +472,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
 
-  defp default_project_form, do: %{"name" => "", "project_slug" => ""}
+  defp default_project_form do
+    %{
+      "name" => "",
+      "project_slug" => "",
+      "workspace_root" => "",
+      "repository_path" => "",
+      "git_name" => "",
+      "git_username" => "",
+      "git_email" => ""
+    }
+  end
 
   defp project_form(params) when is_map(params) do
     %{
       "name" => params["name"] || "",
-      "project_slug" => params["project_slug"] || params["tracker_project_slug"] || ""
+      "project_slug" => params["project_slug"] || params["tracker_project_slug"] || "",
+      "workspace_root" => project_form_value(params, "workspace_root", ["workspace", "root"]),
+      "repository_path" => project_form_value(params, "repository_path", ["repository", "path"]),
+      "git_name" => project_form_value(params, "git_name", ["git", "name"]),
+      "git_username" => project_form_value(params, "git_username", ["git", "username"]),
+      "git_email" => project_form_value(params, "git_email", ["git", "email"])
     }
+  end
+
+  defp project_form_value(params, flat_key, [parent_key, child_key]) do
+    params[flat_key] || get_in(params, [parent_key, child_key]) || ""
   end
 
   defp reset_project_form(socket) do
@@ -467,6 +514,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_error({:workflow_write_failed, _reason}), do: "Could not update WORKFLOW.md."
   defp project_error({:workflow_reload_failed, _reason}), do: "Could not reload WORKFLOW.md."
   defp project_error(_reason), do: "Could not add project."
+
+  defp git_identity_lines(project) do
+    [
+      git_identity_line("name", Map.get(project, :git_name)),
+      git_identity_line("username", Map.get(project, :git_username)),
+      git_identity_line("email", Map.get(project, :git_email))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> ["not set"]
+      lines -> lines
+    end
+  end
+
+  defp git_identity_line(_label, nil), do: nil
+  defp git_identity_line(_label, ""), do: nil
+  defp git_identity_line(label, value), do: "#{label}: #{value}"
+
+  defp agent_instruction_status(%{agent_instruction_file: filename}) when is_binary(filename) and filename != "" do
+    "#{filename} found"
+  end
+
+  defp agent_instruction_status(_project), do: "checked in prepared workspace"
 
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
     DateTime.diff(now, started_at, :second)
