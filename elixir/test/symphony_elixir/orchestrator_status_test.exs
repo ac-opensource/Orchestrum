@@ -103,6 +103,116 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator snapshot tracks MCP startup status by server" do
+    issue_id = "issue-mcp-status"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-MCP",
+      title: "MCP status test",
+      description: "Capture MCP startup state",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-MCP"
+    }
+
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 10,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      running: %{issue_id => running_entry},
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    now = DateTime.utc_now()
+
+    assert {:noreply, state} =
+             Orchestrator.handle_info(
+               {:codex_worker_update, issue_id,
+                %{
+                  event: :notification,
+                  payload: %{
+                    "method" => "codex/event/mcp_startup_update",
+                    "params" => %{
+                      "msg" => %{
+                        "server" => "linear",
+                        "status" => %{"state" => "failed", "error" => "Missing OAuth token"}
+                      }
+                    }
+                  },
+                  timestamp: now
+                }},
+               state
+             )
+
+    assert {:reply, %{running: [snapshot_entry]}, state} =
+             Orchestrator.handle_call(:snapshot, {self(), make_ref()}, state)
+
+    assert [
+             %{
+               name: "linear",
+               status: "failed",
+               detail: "Missing OAuth token",
+               updated_at: ^now
+             }
+           ] = snapshot_entry.mcp_servers
+
+    later = DateTime.utc_now()
+
+    assert {:noreply, state} =
+             Orchestrator.handle_info(
+               {:codex_worker_update, issue_id,
+                %{
+                  event: :notification,
+                  payload: %{
+                    "method" => "codex/event/mcp_startup_update",
+                    "params" => %{
+                      "msg" => %{
+                        "server" => "linear",
+                        "status" => %{"state" => "ready"}
+                      }
+                    }
+                  },
+                  timestamp: later
+                }},
+               state
+             )
+
+    assert {:reply, %{running: [snapshot_entry]}, _state} =
+             Orchestrator.handle_call(:snapshot, {self(), make_ref()}, state)
+
+    assert [
+             %{
+               name: "linear",
+               status: "ready",
+               detail: nil,
+               updated_at: ^later
+             }
+           ] = snapshot_entry.mcp_servers
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -151,6 +261,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:codex_totals, empty_codex_totals())
     end)
 
     now = DateTime.utc_now()
@@ -369,6 +480,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:codex_totals, empty_codex_totals())
     end)
 
     send(
@@ -444,6 +556,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       initial_state
       |> Map.put(:running, %{issue_id => running_entry})
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:codex_totals, empty_codex_totals())
     end)
 
     now = DateTime.utc_now()
@@ -1674,6 +1787,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert rendered =~ "app_status=offline"
     refute rendered =~ "Timestamp:"
+  end
+
+  defp empty_codex_totals do
+    %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
   end
 
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
