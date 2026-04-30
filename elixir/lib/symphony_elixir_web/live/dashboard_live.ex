@@ -440,6 +440,66 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card" id="runs">
           <div class="section-header">
             <div>
+              <h2 class="section-title">MCP servers</h2>
+              <p class="section-copy">Configured MCP servers reported by active Codex sessions.</p>
+            </div>
+          </div>
+
+          <%= if @payload.mcp_servers == [] do %>
+            <p class="empty-state">No MCP servers reported.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 760px;">
+                <thead>
+                  <tr>
+                    <th>Server</th>
+                    <th>Status</th>
+                    <th>Issue</th>
+                    <th>Detail</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={server <- @payload.mcp_servers}>
+                    <td class="mono"><%= server.name %></td>
+                    <td>
+                      <span class={state_badge_class(server.status)}>
+                        <%= server.status %>
+                      </span>
+                    </td>
+                    <td>
+                      <%= if server.issue_identifier do %>
+                        <a class="issue-link" href={"/api/v1/#{server.issue_identifier}"}><%= server.issue_identifier %></a>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td><%= server.detail || "n/a" %></td>
+                    <td>
+                      <%= if server.action do %>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          data-label={mcp_action_label(server.action)}
+                          data-copy={mcp_action_copy(server)}
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                        >
+                          <%= mcp_action_label(server.action) %>
+                        </button>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
               <h2 class="section-title">Running sessions</h2>
               <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
             </div>
@@ -750,6 +810,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp health_badge_class("healthy"), do: "state-badge state-badge-active"
   defp health_badge_class("error"), do: "state-badge state-badge-danger"
   defp health_badge_class(_status), do: "state-badge state-badge-warning"
+
+  defp mcp_action_label("re_auth"), do: "Re-auth"
+  defp mcp_action_label("re_config"), do: "Re-config"
+  defp mcp_action_label(_action), do: "Review"
+
+  defp mcp_action_copy(%{action: "re_auth", name: name}) do
+    "Re-auth MCP server #{name} in the Codex MCP configuration, then retry the affected session."
+  end
+
+  defp mcp_action_copy(%{action: "re_config", name: name}) do
+    "Review MCP server #{name} in the Codex MCP configuration, then retry the affected session."
+  end
+
+  defp mcp_action_copy(%{name: name}) do
+    "Review MCP server #{name} in the Codex MCP configuration."
+  end
 
   defp default_project_form do
     %{
