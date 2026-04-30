@@ -7,7 +7,7 @@ defmodule SymphonyElixir.ProjectConfig do
   the project-specific parts they need.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{AgentInstructions, Config}
   alias SymphonyElixir.Config.Schema
 
   defstruct [
@@ -20,6 +20,9 @@ defmodule SymphonyElixir.ProjectConfig do
     :tracker_assignee,
     :workspace_root,
     :repository_path,
+    :git_name,
+    :git_username,
+    :git_email,
     active_states: [],
     terminal_states: []
   ]
@@ -34,6 +37,9 @@ defmodule SymphonyElixir.ProjectConfig do
           tracker_assignee: String.t() | nil,
           workspace_root: Path.t(),
           repository_path: Path.t() | nil,
+          git_name: String.t() | nil,
+          git_username: String.t() | nil,
+          git_email: String.t() | nil,
           active_states: [String.t()],
           terminal_states: [String.t()]
         }
@@ -95,6 +101,10 @@ defmodule SymphonyElixir.ProjectConfig do
       tracker_project_slug: project.tracker_project_slug,
       workspace_root: project.workspace_root,
       repository_path: project.repository_path,
+      git_name: project.git_name,
+      git_username: project.git_username,
+      git_email: project.git_email,
+      agent_instruction_file: agent_instruction_file(project.repository_path),
       active_states: project.active_states,
       terminal_states: project.terminal_states
     }
@@ -112,7 +122,10 @@ defmodule SymphonyElixir.ProjectConfig do
       active_states: settings.tracker.active_states,
       terminal_states: settings.tracker.terminal_states,
       workspace_root: settings.workspace.root,
-      repository_path: nil
+      repository_path: nil,
+      git_name: nil,
+      git_username: nil,
+      git_email: nil
     }
   end
 
@@ -131,9 +144,21 @@ defmodule SymphonyElixir.ProjectConfig do
       active_states: inherit(project.tracker.active_states, settings.tracker.active_states),
       terminal_states: inherit(project.tracker.terminal_states, settings.tracker.terminal_states),
       workspace_root: inherit(project.workspace.root, settings.workspace.root),
-      repository_path: project.repository.path
+      repository_path: project.repository.path,
+      git_name: project.git.name,
+      git_username: project.git.username,
+      git_email: project.git.email
     }
   end
+
+  defp agent_instruction_file(repository_path) when is_binary(repository_path) do
+    case AgentInstructions.find_file(repository_path) do
+      {filename, _path} -> filename
+      nil -> nil
+    end
+  end
+
+  defp agent_instruction_file(_repository_path), do: nil
 
   defp default_id(project_slug), do: normalize_id(project_slug) || "default"
   defp default_name(project_slug), do: normalize_id(project_slug) || "Default"
