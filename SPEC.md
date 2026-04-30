@@ -1463,6 +1463,8 @@ Enablement (extension):
   same `WORKFLOW.md` `projects` configuration model used by orchestration and polling.
 - Project management controls SHOULD expose configured workspace, repository, Git identity, and
   agent instruction status when the implementation supports those project-specific settings.
+- If the dashboard exposes ticket reply controls, submitted replies MUST use the configured tracker
+  adapter write path rather than only updating local observability state.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
