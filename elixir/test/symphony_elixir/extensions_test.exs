@@ -900,6 +900,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "phx-value-filter=\"running\""
     assert html =~ "phx-value-filter=\"retrying\""
     refute html =~ "Task board"
+    refute html =~ "Runtime audit stream"
     refute html =~ "Project command center"
     refute html =~ "Operator controls"
     refute html =~ "Runtime settings"
@@ -1045,7 +1046,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           {"/projects", "projects", "Project command center"},
           {"/controls", "controls", "Operator controls"},
           {"/settings", "settings", "Runtime settings"},
-          {"/diagnostics", "diagnostics", "Diagnostics"}
+          {"/diagnostics", "diagnostics", "Runtime audit stream"}
         ] do
       {:ok, _view, html} = live(build_conn(), path)
 
@@ -1201,6 +1202,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/diagnostics")
+    assert html =~ "Runtime audit stream"
+    assert html =~ "ORCHESTRUM_AUDIT_STREAM"
+    assert html =~ "Inspector: MT-HTTP"
+    assert html =~ "Token dynamics"
+    assert html =~ "Bottleneck analysis"
+    assert html =~ "Worker node health"
     assert html =~ "MCP servers"
     assert html =~ "linear"
     assert html =~ "failed"

@@ -263,7 +263,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class={["dashboard-shell", "dashboard-view-#{@current_view}"]} aria-labelledby="dashboard-title">
+    <section
+      class={["dashboard-shell", "dashboard-view-#{@current_view}"]}
+      aria-labelledby="dashboard-title"
+      data-current-view={@current_view}
+    >
       <aside class="command-rail" aria-label="Orchestrum command navigation">
         <div class="brand-lockup">
           <p class="brand-title">AION-OS</p>
@@ -1619,12 +1623,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </section>
 
-        <section :if={@current_view == "diagnostics"} id="diagnostics" class="ops-panel" aria-labelledby="diagnostics-title">
-          <div class="section-header">
+        <% audit_entries =
+          @payload
+          |> audit_log_entries(@selected_project_id)
+          |> filtered_audit_entries(@event_query) %>
+        <% audit_inspector = audit_inspector_entry(@payload, @selected_project_id) %>
+        <% audit_nodes = audit_node_health(@payload, @selected_project_id) %>
+
+        <section :if={@current_view == "diagnostics"} id="diagnostics" class="ops-panel audit-log-panel" aria-labelledby="diagnostics-title">
+          <div class="section-header audit-log-header">
             <div>
-              <p class="section-kicker">Diagnostics</p>
-              <h2 id="diagnostics-title" class="section-title">Diagnostics</h2>
-              <p class="section-copy">Raw values and API entry points for debugging the current runtime.</p>
+              <p class="section-kicker">Audit logs</p>
+              <h2 id="diagnostics-title" class="section-title">Runtime audit stream</h2>
+              <p class="section-copy">
+                Live operational trace, payload inspection, and health signals for the current orchestration snapshot.
+              </p>
             </div>
             <div class="link-group" aria-label="Diagnostic API links">
               <a href="/api/v1/state">State JSON</a>
@@ -1632,15 +1645,162 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <div class="diagnostics-grid">
-            <div>
-              <h3 class="control-title">Rate limits</h3>
-              <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+          <div class="audit-metric-grid">
+            <article :for={metric <- audit_metrics(@payload, @selected_project_id, @now)} class={"audit-metric-card audit-metric-card-#{metric.variant}"}>
+              <p class="metric-label"><%= metric.label %></p>
+              <p class="metric-value numeric"><%= metric.value %></p>
+              <p class="metric-detail"><%= metric.detail %></p>
+            </article>
+          </div>
+
+          <div class="audit-console-grid">
+            <section class="audit-terminal" aria-labelledby="audit-terminal-title">
+              <div class="audit-window-bar">
+                <div class="audit-window-title">
+                  <span class="audit-window-dot audit-window-dot-danger"></span>
+                  <span class="audit-window-dot audit-window-dot-accent"></span>
+                  <span class="audit-window-dot audit-window-dot-success"></span>
+                  <h3 id="audit-terminal-title">ORCHESTRUM_AUDIT_STREAM -- <%= selected_project_label(@payload, @selected_project_id) %></h3>
+                </div>
+                <span class="audit-window-meta numeric"><%= format_generated_at(@payload.generated_at) %></span>
+              </div>
+
+              <div class="audit-terminal-body">
+                <%= if audit_entries == [] do %>
+                  <p class="audit-console-empty">No matching audit events in the current snapshot.</p>
+                <% else %>
+                  <p :for={entry <- audit_entries} class={"audit-console-line audit-console-line-#{entry.level}"}>
+                    <span class="audit-console-time"><%= entry.time %></span>
+                    <span class="audit-console-level">[<%= String.upcase(entry.level) %>]</span>
+                    <span class="audit-console-message"><%= entry.message %></span>
+                  </p>
+                <% end %>
+              </div>
+
+              <form id="audit-log-search-form" class="audit-command-line" phx-change="filter_events">
+                <span aria-hidden="true">$</span>
+                <input
+                  type="search"
+                  name="timeline[query]"
+                  value={@event_query}
+                  placeholder="Filter audit logs"
+                  aria-label="Filter audit logs"
+                  autocomplete="off"
+                />
+              </form>
+            </section>
+
+            <aside class="audit-inspector" aria-labelledby="audit-inspector-title">
+              <div class="audit-inspector-header">
+                <h3 id="audit-inspector-title">Inspector: <%= audit_inspector_title(audit_inspector) %></h3>
+              </div>
+
+              <div class="audit-inspector-body">
+                <section class="audit-inspector-block">
+                  <p class="metric-label">Metadata</p>
+                  <dl class="audit-metadata-grid">
+                    <div>
+                      <dt>State</dt>
+                      <dd><%= audit_inspector_status(audit_inspector) %></dd>
+                    </div>
+                    <div>
+                      <dt>Session</dt>
+                      <dd class="mono wrap-anywhere"><%= audit_inspector_session(audit_inspector) %></dd>
+                    </div>
+                    <div>
+                      <dt>Project</dt>
+                      <dd><%= audit_inspector_project(audit_inspector) %></dd>
+                    </div>
+                    <div>
+                      <dt>Polling</dt>
+                      <dd><%= format_polling(@payload.polling) %></dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section class="audit-inspector-block">
+                  <p class="metric-label">Runtime payload</p>
+                  <pre class="audit-code-panel"><%= pretty_value(audit_inspector_payload(audit_inspector)) %></pre>
+                </section>
+
+                <section class="audit-inspector-block">
+                  <p class="metric-label">Rate limit payload</p>
+                  <pre class="audit-code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+                </section>
+              </div>
+            </aside>
+          </div>
+
+          <div class="audit-secondary-grid">
+            <section class="audit-analytics-panel" aria-labelledby="audit-token-title">
+              <div class="audit-panel-header">
+                <div>
+                  <h3 id="audit-token-title">Token dynamics</h3>
+                  <p>Usage allocation across the current snapshot.</p>
+                </div>
+              </div>
+
+              <div class="audit-bar-chart" aria-label="Token usage chart">
+                <div :for={bar <- audit_token_bars(@payload)} class="audit-bar-column">
+                  <span class="audit-bar-value numeric"><%= bar.value %></span>
+                  <span class={"audit-bar audit-bar-#{bar.variant}"} style={"height: #{bar.height}%"}></span>
+                  <span class="audit-bar-label"><%= bar.label %></span>
+                </div>
+              </div>
+            </section>
+
+            <section class="audit-analytics-panel" aria-labelledby="audit-bottleneck-title">
+              <div class="audit-panel-header audit-panel-header-compact">
+                <h3 id="audit-bottleneck-title">Bottleneck analysis</h3>
+              </div>
+
+              <%= if audit_bottleneck_rows(@payload, @selected_project_id, @now) == [] do %>
+                <p class="empty-state">No active or retrying agents in the selected scope.</p>
+              <% else %>
+                <table class="audit-bottleneck-table">
+                  <thead>
+                    <tr>
+                      <th>Agent / task</th>
+                      <th>Load time</th>
+                      <th>Reliability</th>
+                      <th>Signal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={row <- audit_bottleneck_rows(@payload, @selected_project_id, @now)}>
+                      <td>
+                        <span class={"audit-status-dot audit-status-dot-#{row.variant}"}></span>
+                        <span><%= row.label %></span>
+                      </td>
+                      <td class="numeric"><%= row.load_time %></td>
+                      <td>
+                        <span class="audit-reliability-track">
+                          <span class={"audit-reliability-fill audit-reliability-fill-#{row.variant}"} style={"width: #{row.reliability}%"}></span>
+                        </span>
+                      </td>
+                      <td><%= row.signal %></td>
+                    </tr>
+                  </tbody>
+                </table>
+              <% end %>
+            </section>
+          </div>
+
+          <section class="audit-node-panel" aria-labelledby="audit-node-title">
+            <h3 id="audit-node-title">Worker node health</h3>
+            <div class="audit-node-grid">
+              <span :for={node <- audit_nodes} class={"audit-node audit-node-#{node.variant}"}>
+                <span><%= node.label %></span>
+                <small><%= node.detail %></small>
+              </span>
             </div>
-            <div>
-              <h3 class="control-title">Polling</h3>
-              <pre class="code-panel"><%= pretty_value(@payload.polling) %></pre>
-            </div>
+          </section>
+
+          <div class="audit-status-bar">
+            <span><span class="audit-status-dot audit-status-dot-success"></span> SYS_STATUS: <%= audit_system_status(@payload, @selected_project_id) %></span>
+            <span>UPTIME: <%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></span>
+            <span>LOAD_AVG: <%= visible_task_count(@payload, @selected_project_id) %> active/retry</span>
+            <span>SYNCED TO ORCHESTRUM_STATE</span>
           </div>
         </section>
       <% end %>
@@ -1824,6 +1984,293 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp visible_project_count(%{projects: projects}, project_id), do: projects |> visible_projects(project_id) |> length()
   defp visible_project_count(_payload, _project_id), do: 0
+
+  defp audit_metrics(payload, project_id, now) do
+    running_count = visible_running_count(payload, project_id)
+    retrying_count = visible_retrying_count(payload, project_id)
+    total_tokens = payload |> codex_total(:total_tokens) |> format_int()
+
+    [
+      %{
+        label: "Active streams",
+        value: Integer.to_string(running_count),
+        detail: "#{visible_task_count(payload, project_id)} live/retry entries",
+        variant: "accent"
+      },
+      %{
+        label: "Retry pressure",
+        value: Integer.to_string(retrying_count),
+        detail: if(retrying_count == 0, do: "No queued retries", else: "Requires operator attention"),
+        variant: if(retrying_count == 0, do: "success", else: "warning")
+      },
+      %{
+        label: "Token volume",
+        value: total_tokens,
+        detail: "Completed plus active usage",
+        variant: "accent"
+      },
+      %{
+        label: "Runtime",
+        value: format_runtime_seconds(total_runtime_seconds(payload, now)),
+        detail: "Snapshot uptime window",
+        variant: "neutral"
+      }
+    ]
+  end
+
+  defp audit_log_entries(payload, project_id) do
+    running_entries =
+      payload
+      |> visible_running(project_id)
+      |> Enum.map(&running_audit_entry(&1, payload))
+
+    retry_entries =
+      payload
+      |> visible_retrying(project_id)
+      |> Enum.map(&retry_audit_entry(&1, payload))
+
+    running_entries ++ retry_entries ++ [polling_audit_entry(payload)]
+  end
+
+  defp filtered_audit_entries(entries, query) when is_list(entries) and is_binary(query) do
+    normalized_query = query |> String.trim() |> String.downcase()
+
+    if normalized_query == "" do
+      entries
+    else
+      Enum.filter(entries, fn entry ->
+        entry
+        |> audit_entry_search_text()
+        |> String.downcase()
+        |> String.contains?(normalized_query)
+      end)
+    end
+  end
+
+  defp filtered_audit_entries(entries, _query) when is_list(entries), do: entries
+
+  defp running_audit_entry(entry, payload) do
+    message =
+      [
+        entry.issue_identifier,
+        entry.last_event || "runtime",
+        entry.last_message || "session active"
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" - ")
+
+    %{
+      time: audit_entry_time(entry.last_event_at || entry.started_at || payload.generated_at),
+      level: audit_level(message),
+      message: message
+    }
+  end
+
+  defp retry_audit_entry(entry, payload) do
+    message =
+      "#{entry.issue_identifier} - retry attempt #{entry.attempt || 0} queued" <>
+        if(is_binary(entry.error) and entry.error != "", do: ": #{entry.error}", else: "")
+
+    %{
+      time: audit_entry_time(entry.due_at || payload.generated_at),
+      level: "warn",
+      message: message
+    }
+  end
+
+  defp polling_audit_entry(payload) do
+    %{
+      time: audit_entry_time(payload.generated_at),
+      level: "trace",
+      message: "polling cadence #{format_poll_interval(payload.polling)}; next check #{format_polling(payload.polling)}"
+    }
+  end
+
+  defp audit_entry_search_text(entry), do: Enum.join([entry.level, entry.time, entry.message], " ")
+
+  defp audit_entry_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M:%S")
+
+  defp audit_entry_time(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> audit_entry_time(datetime)
+      _ -> value
+    end
+  end
+
+  defp audit_entry_time(_value), do: "--:--:--"
+
+  defp audit_level(message) when is_binary(message) do
+    normalized = String.downcase(message)
+
+    cond do
+      String.contains?(normalized, ["fatal", "error", "failed", "exception"]) -> "error"
+      String.contains?(normalized, ["warn", "retry", "degraded"]) -> "warn"
+      String.contains?(normalized, ["trace", "token"]) -> "trace"
+      true -> "info"
+    end
+  end
+
+  defp audit_inspector_entry(payload, project_id) do
+    case visible_running(payload, project_id) do
+      [entry | _] ->
+        %{kind: :running, entry: entry}
+
+      [] ->
+        case visible_retrying(payload, project_id) do
+          [entry | _] -> %{kind: :retrying, entry: entry}
+          [] -> %{kind: :snapshot, payload: payload, project_id: project_id}
+        end
+    end
+  end
+
+  defp audit_inspector_title(%{kind: :running, entry: %{issue_identifier: identifier}}), do: identifier
+  defp audit_inspector_title(%{kind: :retrying, entry: %{issue_identifier: identifier}}), do: identifier
+  defp audit_inspector_title(_inspector), do: "Snapshot"
+
+  defp audit_inspector_status(%{kind: :running, entry: %{state: state}}), do: state || "running"
+  defp audit_inspector_status(%{kind: :retrying}), do: "retrying"
+  defp audit_inspector_status(_inspector), do: "idle"
+
+  defp audit_inspector_session(%{kind: :running, entry: entry}), do: format_optional(entry.session_id)
+  defp audit_inspector_session(%{kind: :retrying, entry: entry}), do: format_optional(entry.session_id)
+  defp audit_inspector_session(_inspector), do: "n/a"
+
+  defp audit_inspector_project(%{entry: %{project: project}}), do: project_label(project)
+  defp audit_inspector_project(%{payload: payload, project_id: project_id}), do: selected_project_label(payload, project_id)
+  defp audit_inspector_project(_inspector), do: "n/a"
+
+  defp audit_inspector_payload(%{kind: :running, entry: entry}) do
+    %{
+      issue_identifier: entry.issue_identifier,
+      state: entry.state,
+      current_turn_id: entry.current_turn_id,
+      turn_count: entry.turn_count,
+      last_event: entry.last_event,
+      last_message: entry.last_message,
+      tokens: entry.tokens,
+      workspace_path: entry.workspace_path
+    }
+  end
+
+  defp audit_inspector_payload(%{kind: :retrying, entry: entry}) do
+    %{
+      issue_identifier: entry.issue_identifier,
+      attempt: entry.attempt,
+      due_at: entry.due_at,
+      error: entry.error,
+      workspace_path: entry.workspace_path
+    }
+  end
+
+  defp audit_inspector_payload(%{payload: payload}) do
+    %{
+      counts: payload.counts,
+      polling: payload.polling,
+      codex_totals: payload.codex_totals
+    }
+  end
+
+  defp audit_token_bars(payload) do
+    raw_bars = [
+      audit_token_bar(payload, "Input", :input_tokens, "input"),
+      audit_token_bar(payload, "Output", :output_tokens, "output"),
+      audit_token_bar(payload, "Total", :total_tokens, "total"),
+      %{
+        label: "Runtime",
+        raw: payload |> codex_total(:seconds_running) |> round_number(),
+        value: format_runtime_seconds(codex_total(payload, :seconds_running)),
+        variant: "runtime"
+      }
+    ]
+
+    max_value =
+      raw_bars
+      |> Enum.map(& &1.raw)
+      |> Enum.max(fn -> 1 end)
+      |> max(1)
+
+    Enum.map(raw_bars, fn bar ->
+      height = max(round(bar.raw / max_value * 100), 14)
+      Map.put(bar, :height, height)
+    end)
+  end
+
+  defp audit_token_bar(payload, label, key, variant) do
+    raw = codex_total(payload, key)
+    %{label: label, raw: raw, value: format_int(raw), variant: variant}
+  end
+
+  defp audit_bottleneck_rows(payload, project_id, now) do
+    running_rows =
+      payload
+      |> visible_running(project_id)
+      |> Enum.map(fn entry ->
+        %{
+          label: entry.issue_identifier,
+          load_time: format_runtime_and_turns(entry.started_at, entry.turn_count, now),
+          reliability: 92,
+          signal: entry.last_message || entry.last_event || "active",
+          variant: "success"
+        }
+      end)
+
+    retry_rows =
+      payload
+      |> visible_retrying(project_id)
+      |> Enum.map(fn entry ->
+        %{
+          label: entry.issue_identifier,
+          load_time: "attempt #{entry.attempt || 0}",
+          reliability: 42,
+          signal: entry.error || "retry queued",
+          variant: "warning"
+        }
+      end)
+
+    running_rows ++ retry_rows
+  end
+
+  defp audit_node_health(payload, project_id) do
+    nodes =
+      (payload
+       |> visible_running(project_id)
+       |> Enum.map(fn entry ->
+         %{label: entry.issue_identifier, detail: entry.worker_host || "active", variant: "success"}
+       end)) ++
+        (payload
+         |> visible_retrying(project_id)
+         |> Enum.map(fn entry ->
+           %{label: entry.issue_identifier, detail: "retry #{entry.attempt || 0}", variant: "warning"}
+         end))
+
+    case nodes do
+      [] -> [%{label: "IDLE", detail: "standby", variant: "idle"}]
+      nodes -> Enum.take(nodes, 12)
+    end
+  end
+
+  defp audit_system_status(payload, project_id) do
+    if visible_retrying_count(payload, project_id) == 0, do: "NOMINAL", else: "ATTENTION"
+  end
+
+  defp selected_project_label(_payload, "all"), do: "all projects"
+
+  defp selected_project_label(%{projects: projects}, project_id) when is_list(projects) do
+    projects
+    |> find_project(project_id)
+    |> project_label()
+  end
+
+  defp selected_project_label(_payload, _project_id), do: "all projects"
+
+  defp codex_total(%{codex_totals: totals}, key) when is_map(totals), do: number_value(Map.get(totals, key, 0))
+  defp codex_total(_payload, _key), do: 0
+
+  defp number_value(value) when is_integer(value), do: value
+  defp number_value(value) when is_float(value), do: value
+  defp number_value(_value), do: 0
+
+  defp round_number(value) when is_number(value), do: round(value)
 
   defp task_filter_button_class(current, target) do
     if current == target do
