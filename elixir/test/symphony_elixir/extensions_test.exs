@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Linear.{Adapter, Issue}
   alias SymphonyElixir.Tracker.Memory
   alias SymphonyElixir.Tracker.Unsupported
   alias SymphonyElixirWeb.Presenter
@@ -360,6 +360,17 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+    Application.put_env(:symphony_elixir, :log_file, Path.join(System.tmp_dir!(), "missing-orchestrum-test.log"))
+
+    on_exit(fn ->
+      if is_nil(previous_log_file) do
+        Application.delete_env(:symphony_elixir, :log_file)
+      else
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      end
+    end)
+
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
@@ -427,36 +438,27 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
 
-    assert issue_payload == %{
-             "issue_identifier" => "MT-HTTP",
-             "issue_id" => "issue-http",
-             "status" => "running",
-             "workspace" => %{
-               "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
-               "host" => nil
-             },
-             "project" => nil,
-             "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
-             "running" => %{
-               "worker_host" => nil,
-               "workspace_path" => nil,
-               "project" => nil,
-               "session_id" => "thread-http",
-               "turn_count" => 7,
-               "state" => "In Progress",
-               "started_at" => issue_payload["running"]["started_at"],
-               "last_event" => "notification",
-               "last_message" => "rendered",
-               "last_event_at" => nil,
-               "mcp_servers" => [],
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-             },
-             "retry" => nil,
-             "logs" => %{"codex_session_logs" => []},
-             "recent_events" => [],
-             "last_error" => nil,
-             "tracked" => %{}
+    assert issue_payload["issue_identifier"] == "MT-HTTP"
+    assert issue_payload["issue_id"] == "issue-http"
+    assert issue_payload["status"] == "running"
+
+    assert issue_payload["workspace"] == %{
+             "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
+             "host" => nil
            }
+
+    assert issue_payload["attempts"] == %{"restart_count" => 0, "current_retry_attempt" => 0}
+    assert issue_payload["current_turn"]["session_id"] == "thread-http"
+    assert issue_payload["running"]["session_id"] == "thread-http"
+    assert issue_payload["running"]["turn_count"] == 7
+    assert issue_payload["running"]["mcp_servers"] == []
+    assert issue_payload["running"]["last_message"] == "rendered"
+    assert issue_payload["running"]["tokens"] == %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+    assert issue_payload["retry"] == nil
+    assert issue_payload["logs"]["codex_session_logs"] == []
+    assert issue_payload["logs"]["empty_state"] == "No local log files found for this run."
+    assert issue_payload["evidence"]["items"] == []
+    assert issue_payload["last_error"] == nil
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
@@ -513,6 +515,105 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert empty_payload.filtered_count == 0
     assert Enum.all?(empty_payload.groups, &(&1.issues == []))
+  end
+
+  test "presenter projects run detail timeline, missing logs, evidence, and secret-safe summaries" do
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+    Application.put_env(:symphony_elixir, :log_file, Path.join(System.tmp_dir!(), "missing-presenter-log.log"))
+
+    workspace =
+      Path.join(System.tmp_dir!(), "orchestrum-presenter-detail-#{System.unique_integer([:positive])}")
+
+    evidence_path = Path.join(workspace, ".codex/evidence/manual-walkthrough.md")
+    File.mkdir_p!(Path.dirname(evidence_path))
+    File.write!(evidence_path, "fixture evidence")
+
+    on_exit(fn ->
+      if is_nil(previous_log_file) do
+        Application.delete_env(:symphony_elixir, :log_file)
+      else
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      end
+
+      File.rm_rf(workspace)
+    end)
+
+    now = DateTime.utc_now()
+
+    snapshot = %{
+      running: [
+        %{
+          issue_id: "issue-secret",
+          identifier: "MT-SECRET",
+          state: "In Progress",
+          project: %{name: "Sensitive Project"},
+          worker_host: nil,
+          workspace_path: workspace,
+          branch_name: "feature/MT-SECRET-detail",
+          issue_url: "https://linear.app/ac-bitcoin/issue/MT-SECRET",
+          session_id: "thread-secret",
+          current_turn_id: "turn-secret",
+          turn_count: 3,
+          retry_attempt: 2,
+          retry_history: [
+            %{
+              attempt: 2,
+              scheduled_at: now,
+              due_at_wall_ms: System.system_time(:millisecond) + 1_000,
+              delay_ms: 1_000,
+              error: "OPENAI_API_KEY=sk-secret-token"
+            }
+          ],
+          event_history: [
+            %{
+              at: now,
+              event: :notification,
+              category: "tool",
+              summary: "command started: OPENAI_API_KEY=sk-secret-token mix test",
+              details: "Authorization: Bearer abcdefghijkl"
+            }
+          ],
+          codex_input_tokens: 10,
+          codex_output_tokens: 5,
+          codex_total_tokens: 15,
+          runtime_seconds: 12,
+          last_codex_message: nil,
+          last_codex_timestamp: now,
+          last_codex_event: :notification,
+          started_at: now
+        }
+      ],
+      retrying: [],
+      codex_totals: %{input_tokens: 10, output_tokens: 5, total_tokens: 15, seconds_running: 0},
+      rate_limits: %{"primary" => %{"remaining" => 10}},
+      polling: %{checking?: false, next_poll_in_ms: 25_000, poll_interval_ms: 30_000}
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :PresenterDetailOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    assert {:ok, payload} = Presenter.issue_payload("MT-SECRET", orchestrator_name, 50)
+    assert payload.status == "running"
+
+    assert payload.current_turn == %{
+             session_id: "thread-secret",
+             turn_id: "turn-secret",
+             turn_count: 3,
+             last_event: :notification,
+             last_event_at: DateTime.to_iso8601(DateTime.truncate(now, :second))
+           }
+
+    assert [%{category: "tool", summary: summary, details: details} | _] = payload.timeline
+    assert summary =~ "[redacted]"
+    assert details =~ "[redacted]"
+    refute inspect(payload) =~ "sk-secret-token"
+    refute inspect(payload) =~ "abcdefghijkl"
+
+    assert payload.logs.codex_session_logs == []
+    assert payload.logs.empty_state == "No local log files found for this run."
+    assert [%{label: "manual-walkthrough.md", kind: "evidence", path: ^evidence_path}] = payload.evidence.items
+    assert [%{attempt: 2, error: retry_error}] = payload.retry_history
+    assert retry_error =~ "[redacted]"
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -774,6 +875,96 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert detail_html =~ "Blocked by AC-BLOCK"
     assert detail_html =~ "JSON details"
     assert detail_html =~ "Open tracker"
+  end
+
+  test "dashboard liveview opens running and retry detail routes with long timeline messages" do
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+    Application.put_env(:symphony_elixir, :log_file, Path.join(System.tmp_dir!(), "missing-liveview-log.log"))
+
+    on_exit(fn ->
+      if is_nil(previous_log_file) do
+        Application.delete_env(:symphony_elixir, :log_file)
+      else
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      end
+    end)
+
+    now = DateTime.utc_now()
+    long_message = "needle " <> String.duplicate("long timeline message ", 35)
+    snapshot = static_snapshot()
+
+    running =
+      snapshot.running
+      |> hd()
+      |> Map.merge(%{
+        workspace_path: Path.join(System.tmp_dir!(), "orchestrum-live-running"),
+        branch_name: "feature/MT-HTTP-detail",
+        current_turn_id: "turn-http",
+        runtime_seconds: 44,
+        event_history: [
+          %{
+            at: now,
+            event: :notification,
+            category: "message",
+            summary: long_message,
+            details: long_message
+          }
+        ]
+      })
+
+    retry =
+      snapshot.retrying
+      |> hd()
+      |> Map.merge(%{
+        workspace_path: Path.join(System.tmp_dir!(), "orchestrum-live-retry"),
+        branch_name: "feature/MT-RETRY-detail",
+        retry_history: [
+          %{
+            attempt: 2,
+            scheduled_at: now,
+            due_at_wall_ms: System.system_time(:millisecond) + 2_000,
+            delay_ms: 2_000,
+            error: long_message
+          }
+        ]
+      })
+
+    snapshot = %{snapshot | running: [running], retrying: [retry]}
+    orchestrator_name = Module.concat(__MODULE__, :DashboardDetailOrchestrator)
+    {:ok, _pid} = StaticOrchestrator.start_link(name: orchestrator_name, snapshot: snapshot)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _root_view, html} = live(build_conn(), "/")
+    assert html =~ ~s(href="/runs/MT-HTTP")
+    assert html =~ ~s(href="/runs/MT-RETRY")
+
+    {:ok, running_view, running_html} = live(build_conn(), "/runs/MT-HTTP")
+    assert running_html =~ "MT-HTTP run details"
+    assert running_html =~ "Search timeline"
+    assert running_html =~ "needle long timeline message"
+    assert running_html =~ "<details"
+
+    filtered_html =
+      running_view
+      |> form("#timeline-search-form", timeline: %{"query" => "needle"})
+      |> render_change()
+
+    assert filtered_html =~ "needle long timeline message"
+
+    empty_filtered_html =
+      running_view
+      |> form("#timeline-search-form", timeline: %{"query" => "not-present"})
+      |> render_change()
+
+    assert empty_filtered_html =~ "No matching events."
+
+    {:ok, _retry_view, retry_html} = live(build_conn(), "/runs/MT-RETRY")
+    assert retry_html =~ "MT-RETRY run details"
+    assert retry_html =~ "retrying"
+    assert retry_html =~ "Retry history"
+    assert retry_html =~ "Attempt 2"
+    assert retry_html =~ "needle long timeline message"
   end
 
   test "dashboard liveview renders MCP server status and operator actions" do
