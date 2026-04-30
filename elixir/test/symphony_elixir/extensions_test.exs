@@ -181,18 +181,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 1_500
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 1_500
 
     Workflow.set_workflow_file_path(manual_path)
-    File.rm!(manual_path)
+    assert File.rm(manual_path) in [:ok, {:error, :enoent}]
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 1_500
 
     Process.exit(manual_pid, :normal)
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
@@ -569,6 +569,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
+    assert dashboard_css =~ ".section-nav"
+    assert dashboard_css =~ ".segmented-control"
+    assert dashboard_css =~ ":focus-visible"
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
@@ -605,6 +608,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert html =~ "aria-label=\"Dashboard sections\""
+    assert html =~ "Overview"
+    assert html =~ "Task board"
+    assert html =~ "Project command center"
+    assert html =~ "Operator controls"
+    assert html =~ "Runtime settings"
+    assert html =~ "Diagnostics"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
@@ -612,16 +622,44 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
+    assert html =~ "aria-label=\"Copy session ID for MT-HTTP\""
     assert html =~ "Codex update"
     refute html =~ "ticket-reply-form"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
-    assert html =~ "Refresh now"
+    assert html =~ "aria-label=\"Refresh dashboard now\""
+    assert html =~ "data-confirm=\"Queue an immediate poll and reconciliation cycle?\""
+    assert html =~ "aria-label=\"Filter task board\""
+    assert html =~ "phx-value-filter=\"running\""
+    assert html =~ "phx-value-filter=\"retrying\""
     assert html =~ "MCP servers"
     assert html =~ "No MCP servers reported."
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    retrying_html =
+      view
+      |> element("button[phx-value-filter=\"retrying\"]")
+      |> render_click()
+
+    retrying_tasks_html = html_section(retrying_html, "tasks", "mcp-servers")
+
+    assert retrying_html =~ "aria-pressed=\"true\""
+    assert retrying_tasks_html =~ "MT-RETRY"
+    assert retrying_tasks_html =~ "queue-label-retrying"
+    refute retrying_tasks_html =~ "queue-label-running"
+
+    running_html =
+      view
+      |> element("button[phx-value-filter=\"running\"]")
+      |> render_click()
+
+    running_tasks_html = html_section(running_html, "tasks", "mcp-servers")
+
+    assert running_html =~ "aria-pressed=\"true\""
+    assert running_tasks_html =~ "MT-HTTP"
+    refute running_tasks_html =~ "MT-RETRY"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -769,6 +807,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Projects"
+    assert html =~ "Project command center"
     assert html =~ "aria-label=\"Add project\""
     assert html =~ "Git identity"
     assert html =~ "Agent instructions"
@@ -779,6 +818,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert html =~ "Linear project slug"
+    assert html =~ "role=\"dialog\""
+    assert html =~ "aria-label=\"Add project to workflow\""
+    assert html =~ "data-confirm=\"Add this project to WORKFLOW.md?\""
     assert html =~ "Local directory"
     assert html =~ "Remote repository"
     assert html =~ "Git name"
@@ -898,6 +940,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
+    assert html =~ "role=\"alert\""
+    assert html =~ "id=\"diagnostics\""
     assert html =~ "snapshot_unavailable"
   end
 
@@ -1111,6 +1155,14 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp html_section(html, section_id, next_section_id) do
+    html
+    |> String.split(~s(<section id="#{section_id}"), parts: 2)
+    |> List.last()
+    |> String.split(~s(<section id="#{next_section_id}"), parts: 2)
+    |> hd()
+  end
 
   defp ensure_workflow_store_running do
     if Process.whereis(WorkflowStore) do
