@@ -1189,8 +1189,22 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
+    if server_available?(server) do
       GenServer.call(server, :request_refresh)
+    else
+      :unavailable
+    end
+  end
+
+  @spec control_action(String.t(), map()) :: {:ok, map()} | {:error, term()} | :unavailable
+  def control_action(action, params \\ %{}) do
+    control_action(__MODULE__, action, params)
+  end
+
+  @spec control_action(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()} | :unavailable
+  def control_action(server, action, params) when is_binary(action) and is_map(params) do
+    if server_available?(server) do
+      GenServer.call(server, {:control_action, normalize_control_action(action), params})
     else
       :unavailable
     end
@@ -1201,7 +1215,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
+    if server_available?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
@@ -1275,19 +1289,216 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_call(:request_refresh, _from, state) do
+    {payload, state} = queue_refresh(state)
+    {:reply, payload, state}
+  end
+
+  def handle_call({:control_action, action, params}, _from, state) do
+    {reply, state} = handle_control_action(action, params, state)
+
+    if match?({:ok, _payload}, reply) do
+      notify_dashboard()
+    end
+
+    {:reply, reply, state}
+  end
+
+  defp handle_control_action("dispatch-now", _params, %State{} = state) do
+    {payload, state} = queue_refresh(state)
+    {{:ok, Map.merge(payload, %{action: "dispatch-now", status: "queued"})}, state}
+  end
+
+  defp handle_control_action(action, _params, %State{} = state) when action in ["pause", "resume"] do
+    {{:error, {:control_not_implemented, action}}, state}
+  end
+
+  defp handle_control_action(action, params, %State{} = state) when action in ["stop", "cancel"] do
+    case control_issue_id(params, state) do
+      {:ok, issue_id} ->
+        stop_or_cancel_issue(action, issue_id, state)
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  defp handle_control_action("retry-now" = action, params, %State{} = state) do
+    with {:ok, issue_id} <- control_issue_id(params, state),
+         {:ok, retry} <- fetch_retry_attempt(state, issue_id),
+         {:ok, issues} <- safe_fetch_candidate_issues() do
+      state = clear_retry_attempt(state, issue_id)
+
+      {_reply, state} =
+        issues
+        |> find_issue_by_id(issue_id)
+        |> handle_retry_issue_lookup(state, issue_id, retry.attempt, retry_metadata(retry))
+
+      {{:ok, %{action: action, issue_id: issue_id, attempt: retry.attempt, status: "retry_requested"}}, state}
+    else
+      {:error, :retry_not_found} -> {{:error, :retry_not_found}, state}
+      {:error, :issue_not_found} -> {{:error, :issue_not_found}, state}
+      {:error, {:invalid_control_request, _message} = reason} -> {{:error, reason}, state}
+      {:error, reason} -> {{:error, {:tracker_error, reason}}, state}
+    end
+  end
+
+  defp handle_control_action("clear-retry" = action, params, %State{} = state) do
+    with {:ok, issue_id} <- control_issue_id(params, state),
+         {:ok, _retry} <- fetch_retry_attempt(state, issue_id) do
+      state = clear_retry_attempt(state, issue_id)
+      {{:ok, %{action: action, issue_id: issue_id, status: "retry_cleared"}}, state}
+    else
+      {:error, reason} -> {{:error, reason}, state}
+    end
+  end
+
+  defp handle_control_action("release-claim" = action, params, %State{} = state) do
+    case control_issue_id(params, state, require_known_identifier?: false) do
+      {:ok, issue_id} ->
+        release_claim(action, issue_id, state)
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  defp handle_control_action(action, _params, %State{} = state) do
+    {{:error, {:unsupported_control_action, action}}, state}
+  end
+
+  defp stop_or_cancel_issue(action, issue_id, %State{} = state) do
+    cond do
+      Map.has_key?(state.running, issue_id) ->
+        state = terminate_running_issue(state, issue_id, false)
+        {{:ok, %{action: action, issue_id: issue_id, status: "stopped"}}, state}
+
+      Map.has_key?(state.retry_attempts, issue_id) ->
+        state = clear_retry_attempt(state, issue_id)
+        {{:ok, %{action: action, issue_id: issue_id, status: "retry_cleared"}}, state}
+
+      true ->
+        {{:error, :issue_not_found}, state}
+    end
+  end
+
+  defp release_claim(action, issue_id, %State{} = state) do
+    cond do
+      Map.has_key?(state.running, issue_id) or Map.has_key?(state.retry_attempts, issue_id) ->
+        {{:error, :active_claim}, state}
+
+      MapSet.member?(state.claimed, issue_id) ->
+        state = persist_state(%{state | claimed: MapSet.delete(state.claimed, issue_id)})
+        {{:ok, %{action: action, issue_id: issue_id, status: "claim_released"}}, state}
+
+      true ->
+        {{:error, :claim_not_found}, state}
+    end
+  end
+
+  defp queue_refresh(%State{} = state) do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
     coalesced = state.poll_check_in_progress == true or already_due?
     state = if coalesced, do: state, else: schedule_tick(state, 0)
 
-    {:reply,
-     %{
+    {%{
        queued: true,
        coalesced: coalesced,
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
   end
+
+  defp fetch_retry_attempt(%State{} = state, issue_id) do
+    case Map.fetch(state.retry_attempts, issue_id) do
+      {:ok, retry} -> {:ok, retry}
+      :error -> {:error, :retry_not_found}
+    end
+  end
+
+  defp clear_retry_attempt(%State{} = state, issue_id) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{timer_ref: timer_ref} when is_reference(timer_ref) ->
+        Process.cancel_timer(timer_ref)
+
+      _ ->
+        :ok
+    end
+
+    %{
+      state
+      | retry_attempts: Map.delete(state.retry_attempts, issue_id),
+        claimed: MapSet.delete(state.claimed, issue_id)
+    }
+    |> persist_state()
+  end
+
+  defp retry_metadata(retry) when is_map(retry) do
+    %{
+      identifier: Map.get(retry, :identifier),
+      error: Map.get(retry, :error),
+      worker_host: Map.get(retry, :worker_host),
+      workspace_path: Map.get(retry, :workspace_path),
+      session_id: Map.get(retry, :session_id),
+      project: Map.get(retry, :project)
+    }
+  end
+
+  defp control_issue_id(params, state, opts \\ []) when is_map(params) do
+    require_known_identifier? = Keyword.get(opts, :require_known_identifier?, true)
+
+    cond do
+      issue_id = string_param(params, "issue_id") ->
+        {:ok, issue_id}
+
+      issue_identifier = string_param(params, "issue_identifier") ->
+        case issue_id_for_identifier(state, issue_identifier) do
+          nil when require_known_identifier? -> {:error, :issue_not_found}
+          nil -> {:error, {:invalid_control_request, "issue_id is required for unknown or stale claims"}}
+          issue_id -> {:ok, issue_id}
+        end
+
+      true ->
+        {:error, {:invalid_control_request, "issue_id or issue_identifier is required"}}
+    end
+  end
+
+  defp string_param(params, key) do
+    params
+    |> Map.get(key)
+    |> normalize_param_string()
+  end
+
+  defp normalize_param_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_param_string(_value), do: nil
+
+  defp issue_id_for_identifier(%State{} = state, issue_identifier) do
+    Enum.find_value(state.running, fn
+      {issue_id, %{identifier: ^issue_identifier}} -> issue_id
+      _entry -> nil
+    end) ||
+      Enum.find_value(state.retry_attempts, fn
+        {issue_id, %{identifier: ^issue_identifier}} -> issue_id
+        _entry -> nil
+      end)
+  end
+
+  defp normalize_control_action(action) when is_binary(action) do
+    action
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace("_", "-")
+  end
+
+  defp server_available?(server) when is_atom(server), do: not is_nil(Process.whereis(server))
+  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
+  defp server_available?(_server), do: false
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
