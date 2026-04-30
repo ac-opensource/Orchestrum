@@ -1126,12 +1126,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section :if={@current_view == "projects"} id="projects" class="ops-panel" aria-labelledby="projects-title">
-          <div class="section-header">
+        <section :if={@current_view == "projects"} id="projects" class="ops-panel agent-config-panel" aria-labelledby="projects-title">
+          <% visible_project_list = visible_projects(@payload.projects, @selected_project_id) %>
+          <div class="section-header agent-config-header">
             <div>
-              <p class="section-kicker">Projects</p>
+              <p class="section-kicker">Agent Config</p>
               <h2 id="projects-title" class="section-title">Project command center</h2>
-              <p class="section-copy">Command center, health, and scoped controls.</p>
+              <p class="section-copy">Project routing, workspace identity, and scoped controls.</p>
             </div>
             <div class="project-toolbar">
               <form phx-change="filter_project" class="project-filter">
@@ -1157,6 +1158,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
+          <div class="agent-config-summary" aria-label="Agent configuration summary">
+            <article class="agent-summary-card">
+              <span class="agent-summary-label">Configured agents</span>
+              <strong class="numeric"><%= length(visible_project_list) %></strong>
+              <span>visible projects</span>
+            </article>
+            <article class="agent-summary-card">
+              <span class="agent-summary-label">Active runs</span>
+              <strong class="numeric"><%= visible_running_count(@payload, @selected_project_id) %></strong>
+              <span>live sessions</span>
+            </article>
+            <article class="agent-summary-card">
+              <span class="agent-summary-label">Retry queue</span>
+              <strong class="numeric"><%= visible_retrying_count(@payload, @selected_project_id) %></strong>
+              <span>waiting</span>
+            </article>
+            <article class="agent-summary-card">
+              <span class="agent-summary-label">Next poll</span>
+              <strong class="numeric"><%= format_polling(@payload.polling) %></strong>
+              <span>global cadence</span>
+            </article>
+          </div>
+
           <%= if @project_form_notice do %>
             <p class="form-notice" role="status"><%= @project_form_notice %></p>
           <% end %>
@@ -1170,7 +1194,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <%= if @show_project_form do %>
             <form
               id="add-project-form"
-              class="project-form"
+              class="project-form agent-config-form"
               phx-change="change_project_form"
               phx-submit="add_project"
               role="dialog"
@@ -1217,37 +1241,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </form>
           <% end %>
 
-          <%= if visible_projects(@payload.projects, @selected_project_id) == [] do %>
+          <%= if visible_project_list == [] do %>
             <p class="empty-state">No configured projects.</p>
           <% else %>
             <div class="project-command-grid">
-              <article :for={project <- visible_projects(@payload.projects, @selected_project_id)} class="project-command-card">
-                <div class="project-card-header">
-                  <div>
-                    <h3 class="project-title"><%= project.name || project.id %></h3>
-                    <p class="project-subtitle mono"><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></p>
+              <article :for={project <- visible_project_list} class="project-command-card agent-config-card">
+                <div class="project-card-header agent-card-header">
+                  <div class="agent-card-identity">
+                    <span class="agent-avatar" aria-hidden="true"><%= project_initials(project) %></span>
+                    <div>
+                      <h3 class="project-title"><%= project.name || project.id %></h3>
+                      <p class="project-subtitle mono"><%= project.tracker_kind %> / <%= project.tracker_project_slug || "n/a" %></p>
+                    </div>
                   </div>
                   <span class={health_badge_class(project.health.status)}><%= project.health.status %></span>
                 </div>
 
-                <dl class="project-detail-grid">
-                  <div>
+                <dl class="project-detail-grid agent-config-grid">
+                  <div class="agent-config-block agent-config-block-wide">
                     <dt>Workspace root</dt>
                     <dd class="mono path-text"><%= project.workspace_root %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block agent-config-block-wide">
                     <dt>Repository</dt>
                     <dd class="mono path-text"><%= project.repository_path || "default hook" %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Active states</dt>
                     <dd><%= state_list(project.active_states) %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Terminal states</dt>
                     <dd><%= state_list(project.terminal_states) %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Git identity</dt>
                     <dd>
                       <div class="detail-stack">
@@ -1255,25 +1282,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Agent instructions</dt>
                     <dd><%= agent_instruction_status(project) %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Polling</dt>
                     <dd><%= project.polling.status %> · next <%= format_polling(project.polling) %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Last poll</dt>
                     <dd><%= poll_result_label(project.polling.last_result) %></dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Queue</dt>
                     <dd class="numeric">
                       <%= project.queue_counts.total %> total · <%= project.queue_counts.active_runs %> active · <%= project.queue_counts.retrying %> retrying
                     </dd>
                   </div>
-                  <div>
+                  <div class="agent-config-block">
                     <dt>Retry pressure</dt>
                     <dd><%= project.retry_pressure.level %> · max attempt <%= project.retry_pressure.max_attempt %></dd>
                   </div>
@@ -1301,38 +1328,42 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <% end %>
                 </div>
 
-                <div class="project-card-actions">
-                  <button type="button" class="subtle-button" phx-click="refresh_project" phx-value-project-id={project.id}>
-                    Refresh
-                  </button>
-                  <button
-                    type="button"
-                    class="subtle-button"
-                    phx-click="control"
-                    phx-value-action={project_polling_action(@payload, project)}
-                    phx-value-target={project_control_target(project)}
-                    data-confirm={project_polling_confirm(@payload, project)}
-                    phx-disable-with="Working"
-                    disabled={controls_disabled?(@payload)}
-                  >
-                    <%= project_polling_label(@payload, project) %>
-                  </button>
-                  <button
-                    type="button"
-                    class="subtle-button"
-                    phx-click="control"
-                    phx-value-action="dispatch_project_now"
-                    phx-value-target={project_control_target(project)}
-                    data-confirm={"Dispatch #{project.name || project.id} now?"}
-                    phx-disable-with="Queued"
-                    disabled={controls_disabled?(@payload) or global_polling_paused?(@payload) or project_paused?(@payload, project)}
-                  >
-                    Dispatch now
-                  </button>
-                  <a href={dashboard_section_path(project.id, "tasks")} class="subtle-link">Tasks</a>
-                  <a href={dashboard_section_path(project.id, "runs")} class="subtle-link">Runs</a>
-                  <a href={dashboard_section_path(project.id, "settings")} class="subtle-link">Settings</a>
-                  <a href={dashboard_section_path(project.id, "diagnostics")} class="subtle-link">Diagnostics</a>
+                <div class="project-card-actions agent-action-row">
+                  <div class="agent-action-primary">
+                    <button type="button" class="subtle-button" phx-click="refresh_project" phx-value-project-id={project.id}>
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      class="subtle-button"
+                      phx-click="control"
+                      phx-value-action={project_polling_action(@payload, project)}
+                      phx-value-target={project_control_target(project)}
+                      data-confirm={project_polling_confirm(@payload, project)}
+                      phx-disable-with="Working"
+                      disabled={controls_disabled?(@payload)}
+                    >
+                      <%= project_polling_label(@payload, project) %>
+                    </button>
+                    <button
+                      type="button"
+                      class="subtle-button"
+                      phx-click="control"
+                      phx-value-action="dispatch_project_now"
+                      phx-value-target={project_control_target(project)}
+                      data-confirm={"Dispatch #{project.name || project.id} now?"}
+                      phx-disable-with="Queued"
+                      disabled={controls_disabled?(@payload) or global_polling_paused?(@payload) or project_paused?(@payload, project)}
+                    >
+                      Dispatch now
+                    </button>
+                  </div>
+                  <div class="agent-action-links">
+                    <a href={dashboard_section_path(project.id, "tasks")} class="subtle-link">Tasks</a>
+                    <a href={dashboard_section_path(project.id, "runs")} class="subtle-link">Runs</a>
+                    <a href={dashboard_section_path(project.id, "settings")} class="subtle-link">Settings</a>
+                    <a href={dashboard_section_path(project.id, "diagnostics")} class="subtle-link">Diagnostics</a>
+                  </div>
                 </div>
               </article>
             </div>
@@ -2044,6 +2075,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp project_label(%{id: id}) when is_binary(id) and id != "", do: id
   defp project_label(project) when is_map(project), do: project[:slug] || "n/a"
   defp project_label(_project), do: "n/a"
+
+  defp project_initials(project) do
+    project
+    |> project_label()
+    |> String.split(~r/[\s\-_\/]+/, trim: true)
+    |> Enum.take(2)
+    |> Enum.map_join("", &String.first/1)
+    |> String.upcase()
+    |> case do
+      "" -> "AG"
+      initials -> String.slice(initials, 0, 2)
+    end
+  end
 
   defp assignee_label(nil), do: "Unassigned"
   defp assignee_label(""), do: "Unassigned"
