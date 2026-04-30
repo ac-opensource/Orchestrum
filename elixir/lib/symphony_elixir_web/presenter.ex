@@ -48,11 +48,13 @@ defmodule SymphonyElixirWeb.Presenter do
           },
           projects: project_command_centers(projects, snapshot, running, retrying),
           mcp_servers: mcp_server_payloads(snapshot.running),
-          polling: snapshot.polling,
+          polling: Map.put_new(snapshot.polling, :paused?, false),
+          controls: Map.get(snapshot, :controls, default_controls()),
           last_poll_result: Map.get(snapshot, :last_poll_result),
           task_board: dashboard_task_board_payload(snapshot, task_board_filters),
           running: running,
           retrying: retrying,
+          claimed: Enum.map(Map.get(snapshot, :claimed, []), &claimed_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -111,9 +113,13 @@ defmodule SymphonyElixirWeb.Presenter do
         {:error, :unavailable}
 
       payload ->
-        {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+        {:ok, encode_datetimes(payload)}
     end
   end
+
+  @spec control_payload(GenServer.name(), String.t()) ::
+          {:ok, map()} | {:error, :unavailable}
+  def control_payload(orchestrator, action), do: control_payload(orchestrator, action, nil)
 
   @spec project_refresh_payload(String.t(), GenServer.name()) ::
           {:ok, map()} | {:error, :project_not_found | :unavailable}
@@ -138,21 +144,64 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  @spec task_board_payload(GenServer.name(), timeout(), map()) ::
-          {:ok, map()} | {:error, {:invalid_request, String.t()}} | {:error, {:tracker_error, term()}}
-  def task_board_payload(orchestrator, snapshot_timeout_ms, params \\ %{}) when is_map(params) do
-    with {:ok, filters} <- task_board_filters(params),
-         {:ok, issues} <- Tracker.fetch_issues_by_states(filters.states) do
-      snapshot = Orchestrator.snapshot(orchestrator, snapshot_timeout_ms)
-      {:ok, task_board_payload_body(issues, snapshot, filters)}
-    else
-      {:error, {:invalid_request, _message}} = error -> error
-      {:error, reason} -> {:error, {:tracker_error, reason}}
-    end
-  end
-
+  @spec control_payload(GenServer.name(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, :unavailable}
   @spec control_payload(String.t(), map(), GenServer.name()) ::
           {:ok, pos_integer(), map()} | {:error, pos_integer(), map()}
+  def control_payload(orchestrator, "pause_global", _target) do
+    orchestrator
+    |> Orchestrator.pause_polling(:global)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "resume_global", _target) do
+    orchestrator
+    |> Orchestrator.resume_polling(:global)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "pause_project", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.pause_polling({:project, project_id})
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "resume_project", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.resume_polling({:project, project_id})
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "dispatch_project_now", project_id) when is_binary(project_id) do
+    orchestrator
+    |> Orchestrator.request_project_dispatch(project_id)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "cancel_run", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.cancel_run(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "retry_now", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.retry_now(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "clear_retry", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.clear_retry(issue_identifier)
+    |> control_result()
+  end
+
+  def control_payload(orchestrator, "release_claim", issue_identifier) when is_binary(issue_identifier) do
+    orchestrator
+    |> Orchestrator.release_claim(issue_identifier)
+    |> control_result()
+  end
+
   def control_payload(action, params, orchestrator) when is_binary(action) and is_map(params) do
     normalized_action = normalize_control_action(action)
 
@@ -177,6 +226,32 @@ defmodule SymphonyElixirWeb.Presenter do
            "Orchestrator is unavailable",
            nil
          )}
+    end
+  end
+
+  def control_payload(_orchestrator, action, target) when is_binary(action) do
+    {:ok,
+     %{
+       ok: false,
+       action: action,
+       status: "rejected",
+       code: "unsupported_action",
+       message: "Unsupported orchestrator control",
+       target: %{id: target},
+       requested_at: DateTime.utc_now() |> DateTime.to_iso8601()
+     }}
+  end
+
+  @spec task_board_payload(GenServer.name(), timeout(), map()) ::
+          {:ok, map()} | {:error, {:invalid_request, String.t()}} | {:error, {:tracker_error, term()}}
+  def task_board_payload(orchestrator, snapshot_timeout_ms, params \\ %{}) when is_map(params) do
+    with {:ok, filters} <- task_board_filters(params),
+         {:ok, issues} <- Tracker.fetch_issues_by_states(filters.states) do
+      snapshot = Orchestrator.snapshot(orchestrator, snapshot_timeout_ms)
+      {:ok, task_board_payload_body(issues, snapshot, filters)}
+    else
+      {:error, {:invalid_request, _message}} = error -> error
+      {:error, reason} -> {:error, {:tracker_error, reason}}
     end
   end
 
@@ -968,6 +1043,15 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
+  defp claimed_entry_payload(%{issue_id: issue_id} = entry) do
+    %{
+      issue_id: issue_id,
+      safe?: Map.get(entry, :safe?, false)
+    }
+  end
+
+  defp claimed_entry_payload(entry), do: entry
+
   defp running_issue_payload(running) do
     %{
       worker_host: Map.get(running, :worker_host),
@@ -1550,6 +1634,22 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp iso8601(datetime) when is_binary(datetime), do: datetime
   defp iso8601(_datetime), do: nil
+
+  defp default_controls do
+    %{polling_paused: false, paused_projects: [], pending_dispatch_projects: []}
+  end
+
+  defp control_result(:unavailable), do: {:error, :unavailable}
+  defp control_result(payload) when is_map(payload), do: {:ok, encode_datetimes(payload)}
+
+  defp encode_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp encode_datetimes(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {key, encode_datetimes(nested_value)} end)
+  end
+
+  defp encode_datetimes(values) when is_list(values), do: Enum.map(values, &encode_datetimes/1)
+  defp encode_datetimes(value), do: value
 
   defp integer_or_zero(value) when is_integer(value), do: value
 

@@ -31,8 +31,15 @@ defmodule SymphonyElixir.OrchestratorControlTest do
     assert {:ok, %{action: "dispatch-now", queued: true, operations: ["poll", "reconcile"]}} =
              Orchestrator.control_action(orchestrator_name, "dispatch-now", %{})
 
-    assert {:error, {:control_not_implemented, "pause"}} =
+    assert {:ok, %{action: "pause_polling", status: "paused", target: %{scope: "global"}}} =
              Orchestrator.control_action(orchestrator_name, "pause", %{})
+
+    assert :sys.get_state(pid).polling_paused == true
+
+    assert {:ok, %{action: "resume_polling", status: "queued", target: %{scope: "global"}}} =
+             Orchestrator.control_action(orchestrator_name, "resume", %{})
+
+    assert :sys.get_state(pid).polling_paused == false
 
     assert {:ok, %{action: "clear-retry", issue_id: "issue-retry", status: "retry_cleared"}} =
              Orchestrator.control_action(orchestrator_name, "clear-retry", %{"issue_id" => "issue-retry"})

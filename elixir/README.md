@@ -170,11 +170,18 @@ codex:
 - The dashboard/API are available at `/`, dashboard surface routes such as `/tasks`, `/runs`,
   `/projects`, `/controls`, `/settings`, and `/diagnostics`, run detail routes such as
   `/runs/<issue_identifier>`, plus `/api/v1/state`, `/api/v1/task-board`,
-  `/api/v1/<issue_identifier>`, `/api/v1/refresh`, and `/api/v1/control/<control_action>`.
+  `/api/v1/<issue_identifier>`, `/api/v1/refresh`, `/api/v1/control/<control_action>`, and
+  explicit `/api/v1/control/*` routes.
+  Control endpoints are POST-only side effects:
+  `/api/v1/control/polling/{pause,resume}`,
+  `/api/v1/control/projects/<project_id>/{pause,resume,dispatch}`, and
+  `/api/v1/control/issues/<issue_identifier>/{cancel,retry,clear_retry,release_claim}`.
   Task-board responses include configured project metadata, tracker issue fields, applied
   filters, limit/offset pagination, and running/retry overlay state. Control responses use explicit
   success/error envelopes for `pause`, `resume`, `dispatch-now`, `stop`, `cancel`, `retry-now`,
   `clear-retry`, and `release-claim`.
+  If Phoenix endpoint config includes `control_token`, requests must send it as
+  `x-orchestrum-control-token`.
 
 ## Web dashboard
 
@@ -184,8 +191,8 @@ The operational dashboard runs on a minimal Phoenix stack:
   Runs, Projects, Controls, Settings, and Diagnostics
 - JSON API for operational debugging under `/api/v1/*`
 - Project/workspace/repository inventory, dashboard project creation, MCP server status visibility,
-  next-poll visibility, a manual refresh action, and tracker-backed replies for tickets needing
-  human review
+  next-poll visibility, manual refresh, tracker-backed replies for tickets needing human review,
+  and confirmed run/queue controls
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 

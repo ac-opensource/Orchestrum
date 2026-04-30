@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ProjectConfig, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Orchestrator.Persistence
 
@@ -40,6 +40,9 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      polling_paused: false,
+      paused_projects: MapSet.new(),
+      pending_dispatch_projects: MapSet.new(),
       codex_totals: nil,
       codex_rate_limits: nil,
       last_poll_result: nil
@@ -70,7 +73,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     run_terminal_workspace_cleanup()
     state = restore_persisted_state(state)
-    state = schedule_tick(state, 0)
+    state = if state.polling_paused, do: state, else: schedule_tick(state, 0)
 
     {:ok, state}
   end
@@ -78,44 +81,27 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
       when is_reference(tick_token) do
-    state = refresh_runtime_config(state)
-
-    state = %{
-      state
-      | poll_check_in_progress: true,
-        next_poll_due_at_ms: nil,
-        tick_timer_ref: nil,
-        tick_token: nil
-    }
-
-    notify_dashboard()
-    :ok = schedule_poll_cycle_start()
-    {:noreply, state}
+    begin_poll_cycle(state)
   end
 
   def handle_info({:tick, _tick_token}, state), do: {:noreply, state}
 
   def handle_info(:tick, state) do
-    state = refresh_runtime_config(state)
-
-    state = %{
-      state
-      | poll_check_in_progress: true,
-        next_poll_due_at_ms: nil,
-        tick_timer_ref: nil,
-        tick_token: nil
-    }
-
-    notify_dashboard()
-    :ok = schedule_poll_cycle_start()
-    {:noreply, state}
+    begin_poll_cycle(state)
   end
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
-    state = schedule_tick(state, state.poll_interval_ms)
-    state = %{state | poll_check_in_progress: false}
+
+    state =
+      if state.polling_paused do
+        %{state | poll_check_in_progress: false, next_poll_due_at_ms: nil}
+      else
+        state
+        |> maybe_dispatch()
+        |> schedule_tick(state.poll_interval_ms)
+        |> Map.put(:poll_check_in_progress, false)
+      end
 
     notify_dashboard()
     {:noreply, state}
@@ -230,12 +216,32 @@ defmodule SymphonyElixir.Orchestrator do
     result
   end
 
+  def handle_info({:retry_issue_now, issue_id, attempt, metadata}, state)
+      when is_binary(issue_id) and is_integer(attempt) and is_map(metadata) do
+    result = handle_retry_issue(state, issue_id, attempt, metadata)
+    notify_dashboard()
+    result
+  end
+
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+
+  def handle_info({:dispatch_project_now, project_id}, state) when is_binary(project_id) do
+    state =
+      state
+      |> Map.update!(:pending_dispatch_projects, &MapSet.delete(&1, project_id))
+      |> refresh_runtime_config()
+      |> maybe_dispatch_project(project_id)
+
+    notify_dashboard()
+    {:noreply, persist_state(state)}
+  end
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp maybe_dispatch(%State{polling_paused: true} = state), do: state
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
@@ -314,6 +320,24 @@ defmodule SymphonyElixir.Orchestrator do
 
       false ->
         put_last_poll_result(state, "skipped", "No available orchestrator slots.", %{code: "no_available_slots"})
+    end
+  end
+
+  defp maybe_dispatch_project(%State{polling_paused: true} = state, _project_id), do: state
+
+  defp maybe_dispatch_project(%State{} = state, project_id) when is_binary(project_id) do
+    state = reconcile_running_issues(state)
+
+    with %ProjectConfig{} = project <- project_by_key(project_id),
+         false <- MapSet.member?(state.paused_projects, project_control_id(project)),
+         :ok <- Config.validate!(),
+         {:ok, issues} <- safe_fetch_candidate_issues(),
+         true <- available_slots(state) > 0 do
+      issues
+      |> Enum.filter(&issue_belongs_to_project?(&1, project))
+      |> choose_issues(state)
+    else
+      _ -> state
     end
   end
 
@@ -653,6 +677,8 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
+      state.polling_paused != true and
+      !issue_project_paused?(state, issue) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
@@ -1074,23 +1100,49 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set(issue)) and
-         dispatch_slots_available?(issue, state) and
-         worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
-    else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+    cond do
+      state.polling_paused == true ->
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "polling is paused"
+           })
+         )}
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+      issue_project_paused?(state, issue) ->
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "project polling is paused"
+           })
+         )}
+
+      retry_candidate_issue?(issue, terminal_state_set(issue)) and
+        dispatch_slots_available?(issue, state) and
+          worker_slots_available?(state, metadata[:worker_host]) ->
+        {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
+
+      true ->
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
     end
   end
 
@@ -1265,6 +1317,66 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
+  @spec pause_polling() :: map() | :unavailable
+  def pause_polling, do: pause_polling(__MODULE__, :global)
+
+  @spec pause_polling(:global | {:project, String.t()}) :: map() | :unavailable
+  def pause_polling(scope), do: pause_polling(__MODULE__, scope)
+
+  @spec pause_polling(GenServer.server(), :global | {:project, String.t()}) :: map() | :unavailable
+  def pause_polling(server, scope), do: call_control(server, {:pause_polling, scope})
+
+  @spec resume_polling() :: map() | :unavailable
+  def resume_polling, do: resume_polling(__MODULE__, :global)
+
+  @spec resume_polling(:global | {:project, String.t()}) :: map() | :unavailable
+  def resume_polling(scope), do: resume_polling(__MODULE__, scope)
+
+  @spec resume_polling(GenServer.server(), :global | {:project, String.t()}) :: map() | :unavailable
+  def resume_polling(server, scope), do: call_control(server, {:resume_polling, scope})
+
+  @spec request_project_dispatch(String.t()) :: map() | :unavailable
+  def request_project_dispatch(project_id), do: request_project_dispatch(__MODULE__, project_id)
+
+  @spec request_project_dispatch(GenServer.server(), String.t()) :: map() | :unavailable
+  def request_project_dispatch(server, project_id), do: call_control(server, {:dispatch_project_now, project_id})
+
+  @spec cancel_run(String.t()) :: map() | :unavailable
+  def cancel_run(issue_identifier), do: cancel_run(__MODULE__, issue_identifier)
+
+  @spec cancel_run(GenServer.server(), String.t()) :: map() | :unavailable
+  def cancel_run(server, issue_identifier), do: call_control(server, {:cancel_run, issue_identifier})
+
+  @spec retry_now(String.t()) :: map() | :unavailable
+  def retry_now(issue_identifier), do: retry_now(__MODULE__, issue_identifier)
+
+  @spec retry_now(GenServer.server(), String.t()) :: map() | :unavailable
+  def retry_now(server, issue_identifier), do: call_control(server, {:retry_now, issue_identifier})
+
+  @spec clear_retry(String.t()) :: map() | :unavailable
+  def clear_retry(issue_identifier), do: clear_retry(__MODULE__, issue_identifier)
+
+  @spec clear_retry(GenServer.server(), String.t()) :: map() | :unavailable
+  def clear_retry(server, issue_identifier), do: call_control(server, {:clear_retry, issue_identifier})
+
+  @spec release_claim(String.t()) :: map() | :unavailable
+  def release_claim(issue_identifier), do: release_claim(__MODULE__, issue_identifier)
+
+  @spec release_claim(GenServer.server(), String.t()) :: map() | :unavailable
+  def release_claim(server, issue_identifier), do: call_control(server, {:release_claim, issue_identifier})
+
+  defp call_control(server, request) do
+    if server_available?(server) do
+      GenServer.call(server, {:control, request})
+    else
+      :unavailable
+    end
+  end
+
+  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
+  defp server_available?(server) when is_atom(server), do: Process.whereis(server)
+  defp server_available?(_server), do: false
+
   @spec request_refresh() :: map() | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
@@ -1366,19 +1478,291 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    claimed =
+      state.claimed
+      |> Enum.reject(&(Map.has_key?(state.running, &1) or Map.has_key?(state.retry_attempts, &1)))
+      |> Enum.map(&%{issue_id: &1, safe?: true})
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
+       claimed: claimed,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       controls: %{
+         polling_paused: state.polling_paused == true,
+         paused_projects: state.paused_projects |> MapSet.to_list() |> Enum.sort(),
+         pending_dispatch_projects: state.pending_dispatch_projects |> MapSet.to_list() |> Enum.sort()
+       },
        last_poll_result: state.last_poll_result,
        polling: %{
          checking?: state.poll_check_in_progress == true,
+         paused?: state.polling_paused == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
          poll_interval_ms: state.poll_interval_ms
        }
      }, state}
+  end
+
+  def handle_call({:control, {:pause_polling, :global}}, _from, state) do
+    state =
+      state
+      |> cancel_tick()
+      |> Map.merge(%{
+        polling_paused: true,
+        poll_check_in_progress: false,
+        next_poll_due_at_ms: nil
+      })
+      |> persist_state()
+
+    notify_dashboard()
+
+    {:reply,
+     control_success(
+       "pause_polling",
+       "paused",
+       "Global polling paused",
+       %{scope: "global"}
+     ), state}
+  end
+
+  def handle_call({:control, {:resume_polling, :global}}, _from, state) do
+    state =
+      if state.polling_paused do
+        state
+        |> Map.put(:polling_paused, false)
+        |> schedule_tick(0)
+        |> persist_state()
+      else
+        state
+      end
+
+    notify_dashboard()
+
+    {:reply,
+     control_success(
+       "resume_polling",
+       "queued",
+       "Global polling resumed",
+       %{scope: "global"},
+       %{queued: state.polling_paused == false}
+     ), state}
+  end
+
+  def handle_call({:control, {:pause_polling, {:project, project_key}}}, _from, state) do
+    reply_project_control(state, project_key, "pause_project", fn project ->
+      project_id = project_control_id(project)
+
+      {
+        state
+        |> Map.update!(:paused_projects, &MapSet.put(&1, project_id))
+        |> persist_state(),
+        control_success("pause_project", "paused", "Project polling paused", project_target(project))
+      }
+    end)
+  end
+
+  def handle_call({:control, {:resume_polling, {:project, project_key}}}, _from, state) do
+    reply_project_control(state, project_key, "resume_project", fn project ->
+      project_id = project_control_id(project)
+
+      state =
+        state
+        |> Map.update!(:paused_projects, &MapSet.delete(&1, project_id))
+        |> schedule_tick_unless_paused()
+        |> persist_state()
+
+      {state, control_success("resume_project", "queued", "Project polling resumed", project_target(project))}
+    end)
+  end
+
+  def handle_call({:control, {:dispatch_project_now, project_key}}, _from, state) do
+    reply_project_control(state, project_key, "dispatch_project_now", fn project ->
+      project_id = project_control_id(project)
+      target = project_target(project)
+
+      cond do
+        state.polling_paused == true ->
+          {state,
+           control_rejected(
+             "dispatch_project_now",
+             "polling_paused",
+             "Global polling is paused",
+             target
+           )}
+
+        MapSet.member?(state.paused_projects, project_id) ->
+          {state,
+           control_rejected(
+             "dispatch_project_now",
+             "project_paused",
+             "Project polling is paused",
+             target
+           )}
+
+        available_slots(state) <= 0 ->
+          {state,
+           control_rejected(
+             "dispatch_project_now",
+             "no_available_slots",
+             "No orchestrator slots are available",
+             target
+           )}
+
+        MapSet.member?(state.pending_dispatch_projects, project_id) ->
+          {state,
+           control_success(
+             "dispatch_project_now",
+             "coalesced",
+             "Project dispatch already queued",
+             target,
+             %{queued: true, coalesced: true}
+           )}
+
+        true ->
+          send(self(), {:dispatch_project_now, project_id})
+
+          state =
+            state
+            |> Map.update!(:pending_dispatch_projects, &MapSet.put(&1, project_id))
+            |> persist_state()
+
+          {state,
+           control_success(
+             "dispatch_project_now",
+             "queued",
+             "Project dispatch queued",
+             target,
+             %{queued: true, coalesced: false}
+           )}
+      end
+    end)
+  end
+
+  def handle_call({:control, {:cancel_run, issue_identifier}}, _from, state) do
+    case find_running_issue(state, issue_identifier) do
+      {issue_id, running_entry} ->
+        state = terminate_running_issue(state, issue_id, false)
+        notify_dashboard()
+
+        {:reply, control_success("cancel_run", "canceled", "Active run canceled", issue_target(issue_id, running_entry)), state}
+
+      nil ->
+        {:reply,
+         control_rejected(
+           "cancel_run",
+           "issue_not_running",
+           "Issue does not have an active run",
+           %{issue_identifier: issue_identifier}
+         ), state}
+    end
+  end
+
+  def handle_call({:control, {:retry_now, issue_identifier}}, _from, state) do
+    case find_retry_issue(state, issue_identifier) do
+      {issue_id, retry_entry} ->
+        retry_target = retry_target(issue_id, retry_entry)
+
+        cond do
+          state.polling_paused == true ->
+            {:reply, control_rejected("retry_now", "polling_paused", "Global polling is paused", retry_target), state}
+
+          retry_project_paused?(state, retry_entry) ->
+            {:reply, control_rejected("retry_now", "project_paused", "Project polling is paused", retry_target), state}
+
+          Map.has_key?(state.running, issue_id) ->
+            {:reply, control_rejected("retry_now", "issue_running", "Issue already has an active run", retry_target), state}
+
+          true ->
+            cancel_retry_timer(retry_entry)
+            metadata = retry_metadata(retry_entry)
+            send(self(), {:retry_issue_now, issue_id, retry_entry.attempt, metadata})
+
+            state =
+              state
+              |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
+              |> persist_state()
+
+            notify_dashboard()
+
+            {:reply,
+             control_success(
+               "retry_now",
+               "queued",
+               "Retry queued now",
+               retry_target,
+               %{queued: true}
+             ), state}
+        end
+
+      nil ->
+        {:reply,
+         control_rejected("retry_now", "retry_not_found", "Retry entry not found", %{
+           issue_identifier: issue_identifier
+         }), state}
+    end
+  end
+
+  def handle_call({:control, {:clear_retry, issue_identifier}}, _from, state) do
+    case find_retry_issue(state, issue_identifier) do
+      {issue_id, retry_entry} ->
+        cancel_retry_timer(retry_entry)
+
+        state =
+          state
+          |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
+          |> Map.update!(:claimed, &MapSet.delete(&1, issue_id))
+          |> persist_state()
+
+        notify_dashboard()
+
+        {:reply, control_success("clear_retry", "cleared", "Retry entry cleared", retry_target(issue_id, retry_entry)), state}
+
+      nil ->
+        {:reply,
+         control_rejected("clear_retry", "retry_not_found", "Retry entry not found", %{
+           issue_identifier: issue_identifier
+         }), state}
+    end
+  end
+
+  def handle_call({:control, {:release_claim, issue_identifier}}, _from, state) do
+    issue_id = find_claim_issue_id(state, issue_identifier)
+
+    cond do
+      is_nil(issue_id) ->
+        {:reply,
+         control_rejected("release_claim", "claim_not_found", "Claim not found", %{
+           issue_identifier: issue_identifier
+         }), state}
+
+      Map.has_key?(state.running, issue_id) ->
+        {:reply,
+         control_rejected("release_claim", "issue_running", "Cannot release a claim for an active run", %{
+           issue_id: issue_id
+         }), state}
+
+      Map.has_key?(state.retry_attempts, issue_id) ->
+        {:reply,
+         control_rejected("release_claim", "retry_pending", "Cannot release a claim while a retry entry exists", %{
+           issue_id: issue_id
+         }), state}
+
+      true ->
+        state =
+          state
+          |> Map.update!(:claimed, &MapSet.delete(&1, issue_id))
+          |> persist_state()
+
+        notify_dashboard()
+
+        {:reply, control_success("release_claim", "released", "Claim released", %{issue_id: issue_id}), state}
+    end
+  end
+
+  def handle_call({:control, {action, _target}}, _from, state) do
+    {:reply, control_rejected(to_string(action), "unsupported_action", "Unsupported orchestrator control", %{}), state}
   end
 
   def handle_call(:request_refresh, _from, state) do
@@ -1401,8 +1785,35 @@ defmodule SymphonyElixir.Orchestrator do
     {{:ok, Map.merge(payload, %{action: "dispatch-now", status: "queued"})}, state}
   end
 
-  defp handle_control_action(action, _params, %State{} = state) when action in ["pause", "resume"] do
-    {{:error, {:control_not_implemented, action}}, state}
+  defp handle_control_action("pause", _params, %State{} = state) do
+    state =
+      state
+      |> cancel_tick()
+      |> Map.merge(%{
+        polling_paused: true,
+        poll_check_in_progress: false,
+        next_poll_due_at_ms: nil
+      })
+      |> persist_state()
+
+    {{:ok, control_success("pause_polling", "paused", "Global polling paused", %{scope: "global"})}, state}
+  end
+
+  defp handle_control_action("resume", _params, %State{} = state) do
+    state =
+      if state.polling_paused do
+        state
+        |> Map.put(:polling_paused, false)
+        |> schedule_tick(0)
+        |> persist_state()
+      else
+        state
+      end
+
+    {{:ok,
+      control_success("resume_polling", "queued", "Global polling resumed", %{scope: "global"}, %{
+        queued: state.polling_paused == false
+      })}, state}
   end
 
   defp handle_control_action(action, params, %State{} = state) when action in ["stop", "cancel"] do
@@ -1492,14 +1903,27 @@ defmodule SymphonyElixir.Orchestrator do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
     coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
 
-    {%{
-       queued: true,
-       coalesced: coalesced,
-       requested_at: DateTime.utc_now(),
-       operations: ["poll", "reconcile"]
-     }, state}
+    if state.polling_paused do
+      {%{
+         queued: false,
+         coalesced: false,
+         rejected: true,
+         reason: "polling_paused",
+         message: "Global polling is paused",
+         requested_at: DateTime.utc_now(),
+         operations: []
+       }, state}
+    else
+      state = if coalesced, do: state, else: schedule_tick(state, 0)
+
+      {%{
+         queued: true,
+         coalesced: coalesced,
+         requested_at: DateTime.utc_now(),
+         operations: ["poll", "reconcile"]
+       }, state}
+    end
   end
 
   defp put_last_poll_result(%State{} = state, status, message, details) do
@@ -1600,10 +2024,6 @@ defmodule SymphonyElixir.Orchestrator do
     |> String.downcase()
     |> String.replace("_", "-")
   end
-
-  defp server_available?(server) when is_atom(server), do: not is_nil(Process.whereis(server))
-  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
-  defp server_available?(_server), do: false
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
@@ -1870,6 +2290,47 @@ defmodule SymphonyElixir.Orchestrator do
     :ok
   end
 
+  defp begin_poll_cycle(state) do
+    state = refresh_runtime_config(state)
+
+    if state.polling_paused do
+      state =
+        state
+        |> cancel_tick()
+        |> Map.merge(%{
+          poll_check_in_progress: false,
+          next_poll_due_at_ms: nil
+        })
+        |> persist_state()
+
+      notify_dashboard()
+      {:noreply, state}
+    else
+      state = %{
+        state
+        | poll_check_in_progress: true,
+          next_poll_due_at_ms: nil,
+          tick_timer_ref: nil,
+          tick_token: nil
+      }
+
+      notify_dashboard()
+      :ok = schedule_poll_cycle_start()
+      {:noreply, state}
+    end
+  end
+
+  defp cancel_tick(%State{} = state) do
+    if is_reference(state.tick_timer_ref) do
+      Process.cancel_timer(state.tick_timer_ref)
+    end
+
+    %{state | tick_timer_ref: nil, tick_token: nil}
+  end
+
+  defp schedule_tick_unless_paused(%State{polling_paused: true} = state), do: state
+  defp schedule_tick_unless_paused(%State{} = state), do: schedule_tick(state, 0)
+
   defp next_poll_in_ms(nil, _now_ms), do: nil
 
   defp next_poll_in_ms(next_poll_due_at_ms, now_ms) when is_integer(next_poll_due_at_ms) do
@@ -1909,6 +2370,215 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp reply_project_control(state, project_key, action, fun) when is_function(fun, 1) do
+    case project_by_key(project_key) do
+      %ProjectConfig{} = project ->
+        {state, reply} = fun.(project)
+        notify_dashboard()
+        {:reply, reply, state}
+
+      nil ->
+        {:reply,
+         control_rejected(action, "project_not_found", "Project not found", %{
+           project_id: project_key
+         }), state}
+    end
+  end
+
+  defp control_success(action, status, message, target, extra \\ %{}) do
+    Map.merge(
+      %{
+        ok: true,
+        action: action,
+        status: status,
+        message: message,
+        target: target,
+        result_id: control_result_id(),
+        requested_at: DateTime.utc_now()
+      },
+      extra
+    )
+  end
+
+  defp control_rejected(action, code, message, target, extra \\ %{}) do
+    Map.merge(
+      %{
+        ok: false,
+        action: action,
+        status: "rejected",
+        code: code,
+        message: message,
+        target: target,
+        result_id: control_result_id(),
+        requested_at: DateTime.utc_now()
+      },
+      extra
+    )
+  end
+
+  defp control_result_id do
+    "ctrl-#{System.unique_integer([:positive, :monotonic])}"
+  end
+
+  defp project_by_key(project_key) when is_binary(project_key) do
+    normalized_key = normalize_project_key(project_key)
+
+    Config.project_configs()
+    |> Enum.find(fn project ->
+      project
+      |> project_keys()
+      |> Enum.map(&normalize_project_key/1)
+      |> Enum.any?(&(&1 == normalized_key))
+    end)
+  end
+
+  defp project_by_key(_project_key), do: nil
+
+  defp project_keys(%ProjectConfig{} = project) do
+    [project.id, project.name, project.tracker_project_slug]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp project_control_id(%ProjectConfig{id: id}) when is_binary(id) and id != "", do: id
+  defp project_control_id(%ProjectConfig{} = project), do: project.tracker_project_slug || project.name || "default"
+
+  defp project_target(%ProjectConfig{} = project) do
+    %{
+      project_id: project_control_id(project),
+      name: project.name,
+      tracker_project_slug: project.tracker_project_slug
+    }
+  end
+
+  defp normalize_project_key(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_project_key(_value), do: ""
+
+  defp issue_belongs_to_project?(%Issue{} = issue, %ProjectConfig{} = project) do
+    project_control_id(Config.project_config_for_issue(issue)) == project_control_id(project)
+  end
+
+  defp issue_belongs_to_project?(_issue, _project), do: false
+
+  defp issue_project_paused?(%State{} = state, %Issue{} = issue) do
+    issue
+    |> Config.project_config_for_issue()
+    |> project_control_id()
+    |> then(&MapSet.member?(state.paused_projects, &1))
+  end
+
+  defp retry_project_paused?(%State{} = state, retry_entry) when is_map(retry_entry) do
+    case Map.get(retry_entry, :project) do
+      project when is_map(project) ->
+        project
+        |> retry_project_keys()
+        |> Enum.map(&normalize_project_key/1)
+        |> Enum.any?(fn key ->
+          Enum.any?(state.paused_projects, &(normalize_project_key(&1) == key))
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp retry_project_paused?(_state, _retry_entry), do: false
+
+  defp retry_project_keys(project) when is_map(project) do
+    [
+      project[:id],
+      project["id"],
+      project[:name],
+      project["name"],
+      project[:slug],
+      project["slug"],
+      project[:slug_id],
+      project["slugId"],
+      project["slug_id"]
+    ]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp find_running_issue(%State{} = state, issue_identifier) when is_binary(issue_identifier) do
+    Enum.find_value(state.running, fn {issue_id, running_entry} ->
+      if issue_ref_matches?(issue_id, Map.get(running_entry, :identifier), issue_identifier) do
+        {issue_id, running_entry}
+      end
+    end)
+  end
+
+  defp find_running_issue(_state, _issue_identifier), do: nil
+
+  defp find_retry_issue(%State{} = state, issue_identifier) when is_binary(issue_identifier) do
+    Enum.find_value(state.retry_attempts, fn {issue_id, retry_entry} ->
+      if issue_ref_matches?(issue_id, Map.get(retry_entry, :identifier), issue_identifier) do
+        {issue_id, retry_entry}
+      end
+    end)
+  end
+
+  defp find_retry_issue(_state, _issue_identifier), do: nil
+
+  defp find_claim_issue_id(%State{} = state, issue_identifier) when is_binary(issue_identifier) do
+    cond do
+      MapSet.member?(state.claimed, issue_identifier) ->
+        issue_identifier
+
+      match?({_, _}, find_running_issue(state, issue_identifier)) ->
+        {issue_id, _entry} = find_running_issue(state, issue_identifier)
+        issue_id
+
+      match?({_, _}, find_retry_issue(state, issue_identifier)) ->
+        {issue_id, _entry} = find_retry_issue(state, issue_identifier)
+        issue_id
+
+      true ->
+        nil
+    end
+  end
+
+  defp find_claim_issue_id(_state, _issue_identifier), do: nil
+
+  defp issue_ref_matches?(issue_id, identifier, requested) do
+    normalize_issue_ref(issue_id) == normalize_issue_ref(requested) or
+      normalize_issue_ref(identifier) == normalize_issue_ref(requested)
+  end
+
+  defp normalize_issue_ref(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_issue_ref(_value), do: ""
+
+  defp issue_target(issue_id, running_entry) when is_map(running_entry) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: Map.get(running_entry, :identifier),
+      session_id: Map.get(running_entry, :session_id)
+    }
+  end
+
+  defp retry_target(issue_id, retry_entry) when is_map(retry_entry) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: Map.get(retry_entry, :identifier),
+      attempt: Map.get(retry_entry, :attempt)
+    }
+  end
+
+  defp cancel_retry_timer(retry_entry) when is_map(retry_entry) do
+    case Map.get(retry_entry, :timer_ref) do
+      ref when is_reference(ref) -> Process.cancel_timer(ref)
+      _ -> :ok
+    end
+  end
+
   defp restore_persisted_state(%State{} = state) do
     path = Config.orchestrator_state_path()
 
@@ -1919,6 +2589,7 @@ defmodule SymphonyElixir.Orchestrator do
         |> restore_running_entries(decoded)
         |> restore_codex_totals(decoded["codex_totals"])
         |> restore_codex_rate_limits(decoded["codex_rate_limits"])
+        |> restore_controls(decoded["controls"])
 
       {:error, :enoent} ->
         state
@@ -1940,7 +2611,8 @@ defmodule SymphonyElixir.Orchestrator do
       "running_sessions" => encode_running_session_list(state.running),
       "retry_attempt_list" => encode_retry_entry_list(state.retry_attempts),
       "codex_totals" => encode_map(state.codex_totals),
-      "codex_rate_limits" => encode_map(state.codex_rate_limits)
+      "codex_rate_limits" => encode_map(state.codex_rate_limits),
+      "controls" => encode_controls(state)
     }
 
     case Persistence.save(path, payload) do
@@ -2062,6 +2734,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp restore_codex_rate_limits(state, _rate_limits), do: state
+
+  defp restore_controls(%State{} = state, controls) when is_map(controls) do
+    %{
+      state
+      | polling_paused: controls["polling_paused"] == true,
+        paused_projects: controls["paused_projects"] |> list_of_strings() |> MapSet.new(),
+        pending_dispatch_projects: MapSet.new()
+    }
+  end
+
+  defp restore_controls(%State{} = state, _controls), do: state
 
   defp decode_running_entry(issue_id, entry) when is_binary(issue_id) and is_map(entry) do
     issue = decode_issue(entry["issue"], issue_id, entry["identifier"], entry["project"])
@@ -2261,6 +2944,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp encode_issue(_issue), do: nil
 
+  defp encode_controls(%State{} = state) do
+    %{
+      "polling_paused" => state.polling_paused == true,
+      "paused_projects" => state.paused_projects |> MapSet.to_list() |> Enum.sort()
+    }
+  end
+
   defp encode_map(value) when is_map(value), do: value
   defp encode_map(_value), do: nil
 
@@ -2355,6 +3045,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp string_value(_value), do: nil
+
+  defp list_of_strings(values) when is_list(values) do
+    values
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+  end
+
+  defp list_of_strings(_values), do: []
 
   defp map_value(map, [key]) when is_map(map), do: Map.get(map, key)
 
